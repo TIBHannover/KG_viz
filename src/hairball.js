@@ -249,7 +249,7 @@ export function renderHairball(container) {
       (l.source.id === target.id || l.target.id === target.id)
     ).length;
     infoEl.innerHTML = `
-      <div class="info-name" style="border-left-color:${colorFor(target.hue)}">${target.label}</div>
+      <div class="info-name" style="border-left-color:${colorFor(target.hue)}">${target.title || target.label}</div>
       <div class="info-meta">
         <div><span>Domain</span><b>${dom.label}</b></div>
         <div><span>Cluster</span><b>${cl.label}</b></div>

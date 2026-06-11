@@ -1,6 +1,7 @@
 import { EnergyKG } from './data.js';
 import { renderHairball } from './hairball.js';
 import { renderAdaptive } from './adaptive.js';
+import { renderSensemaking } from './sensemaking.js';
 
 const s = EnergyKG.stats;
 document.getElementById("head-stats").innerHTML = `
@@ -16,7 +17,8 @@ const tabs = document.querySelectorAll(".tab-btn");
 function setTab(name) {
   tabs.forEach(t => t.classList.toggle("active", t.dataset.tab === name));
   if (name === "hairball") renderHairball(view);
-  else renderAdaptive(view);
+  else if (name === "adaptive") renderAdaptive(view);
+  else renderSensemaking(view);
 }
 
 tabs.forEach(t => t.addEventListener("click", () => setTab(t.dataset.tab)));

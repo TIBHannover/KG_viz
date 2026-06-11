@@ -92,6 +92,7 @@ export function renderAdaptive(container) {
   function setPath(newPath, source) {
     path = newPath.slice();
     if (source !== "history") history.push(path.slice());
+    svg.call(zoom.transform, d3.zoomIdentity);
     render();
   }
 
@@ -175,14 +176,29 @@ export function renderAdaptive(container) {
     if (history.length > 1) {
       const trail = document.createElement("div");
       trail.className = "history-trail";
-      trail.innerHTML = `<span class="trail-label">history</span>`;
-      history.slice(-6).forEach((p) => {
-        const dot = document.createElement("span");
-        dot.className = "trail-dot d" + p.length;
-        dot.title = p.length === 0 ? "All" : (p.length === 1 ? KG.domains[p[0]].label : KG.domains[p[0]].label + " › " + KG.clusters[p[1]].label);
-        trail.appendChild(dot);
+      trail.innerHTML = `<span class="trail-label">visited</span>`;
+      // Show last 4 unique locations (excluding current state)
+      const unique = [];
+      const seenKeys = new Set([path.join(',')]);
+      for (let i = history.length - 2; i >= 0 && unique.length < 4; i--) {
+        const p = history[i];
+        const key = p.join(',');
+        if (!seenKeys.has(key)) { seenKeys.add(key); unique.push(p); }
+      }
+      unique.forEach(p => {
+        const name = p.length === 0 ? 'All Domains'
+          : p.length === 1 ? KG.domains[p[0]]?.label
+          : KG.clusters[p[1]]?.label;
+        if (!name) return;
+        const btn = document.createElement("button");
+        btn.className = "crumb";
+        btn.textContent = name.length > 22 ? name.slice(0, 21) + '…' : name;
+        btn.title = p.length <= 1 ? (KG.domains[p[0]]?.label || 'All Domains')
+          : KG.domains[p[0]]?.label + ' › ' + KG.clusters[p[1]]?.label;
+        btn.onclick = () => setPath(p, "history");
+        trail.appendChild(btn);
       });
-      crumbs.appendChild(trail);
+      if (unique.length) crumbs.appendChild(trail);
     }
   }
 
@@ -532,7 +548,7 @@ export function renderAdaptive(container) {
       const intHtml = internal.map(n =>
         `<li class="conn-item" data-jump-internal="${n.id}">
            <span class="conn-dot" style="background:${colorFor(n.hue)}"></span>
-           <span class="conn-name">${n.label}</span>
+           <span class="conn-name" title="${n.title || n.label}">${n.label}</span>
          </li>`).join("") || `<li class="conn-empty">No intra-cluster links.</li>`;
 
       const extGroupsHtml = Object.entries(byCluster).map(([cid, info]) => {
@@ -541,7 +557,7 @@ export function renderAdaptive(container) {
         const items = info.items.map(n =>
           `<li class="conn-item" data-jump-cluster="${cid}">
              <span class="conn-dot" style="background:${colorFor(info.hue)}"></span>
-             <span class="conn-name">${n.label}</span>
+             <span class="conn-name" title="${n.title || n.label}">${n.label}</span>
            </li>`).join("");
         return `<div class="conn-group">
           <div class="conn-group-h">
@@ -560,7 +576,7 @@ export function renderAdaptive(container) {
       connPanel.innerHTML = `
         <div class="conn-head">
           <div class="conn-title" style="border-left-color:${colorFor(d.hue)}">
-            <div class="conn-name-lg">${d.label}</div>
+            <div class="conn-name-lg" title="${d.title || d.label}">${d.title || d.label}</div>
             <div class="conn-meta-row">
               <span>${KG.clusters[d.cluster].label}</span>
               <span class="sep">·</span>
@@ -593,6 +609,14 @@ export function renderAdaptive(container) {
           setPath([dom, cid]);
         });
       });
+      connPanel.querySelectorAll("[data-jump-internal]").forEach(el => {
+        el.addEventListener("click", (ev) => {
+          ev.stopPropagation();
+          const targetId = el.getAttribute("data-jump-internal");
+          const targetNode = leaves.find(n => n.id === targetId);
+          if (targetNode) { selectedLeaf = targetNode.id; highlightLeaf(targetNode); }
+        });
+      });
     }
     function clearLeafHL() {
       g.classed("dim", false).classed("focus", false);
@@ -622,7 +646,7 @@ export function renderAdaptive(container) {
     const cl = kind === "cluster" ? KG.clusters[item.id] : (kind === "leaf" ? KG.clusters[item.cluster] : null);
     const swatch = colorFor(item.hue);
     el.innerHTML = `
-      <div class="info-name" style="border-left-color:${swatch}">${item.label || cl?.label}</div>
+      <div class="info-name" style="border-left-color:${swatch}">${kind === "leaf" ? (item.title || item.label) : (item.label || cl?.label)}</div>
       <div class="info-meta">
         <div><span>Layer</span><b>${kind.toUpperCase()}</b></div>
         ${dom ? `<div><span>Domain</span><b>${dom.label}</b></div>` : ""}
