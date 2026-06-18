@@ -6,13 +6,17 @@
  * Hierarchy derived from RDF classes and properties:
  *   Domain  → rdfs:label source prefix  (dcat:Dataset property)
  *   Cluster → human-readable topic category (mapped from dcat:keyword values)
- *   Leaf    → individual dcat:Dataset instance (sampled, max 20 per cluster)
+ *   Leaf    → individual dcat:Dataset instance (every dataset — no sampling)
  *
  * Edges — real semantic relationships only (no pseudo-random connections):
  *   Shared dcat:keyword            → topic co-occurrence
- *   Shared dct:publisher           → same publishing organisation
  *   Shared vcard:fn                → same contact researcher
  *   Shared datacite:isDescribedBy  → same cited publication / DOI
+ *
+ * NOTE: dct:publisher is NOT used as a link. It only ever resolves to the
+ * source portal (INSPIRE / OpenAIRE), i.e. it duplicates the domain split and
+ * produces a degenerate ~10k-member "shared publisher" group. It is kept as
+ * display-only metadata (orgName), never as an edge.
  *
  * Run with: npm run parse-kg
  */
@@ -36,6 +40,8 @@ const DCAT_KW      = 'http://www.w3.org/ns/dcat#keyword';
 const DCT_TITLE    = 'http://purl.org/dc/terms/title';
 const DCT_PUB      = 'http://purl.org/dc/terms/publisher';
 const DCT_CREATOR  = 'http://purl.org/dc/terms/creator';
+const DCT_DESC     = 'http://purl.org/dc/terms/description';
+const DCT_ISSUED   = 'http://purl.org/dc/terms/issued';
 const RDFS_LABEL   = 'http://www.w3.org/2000/01/rdf-schema#label';
 const VCARD_FN     = 'http://www.w3.org/2006/vcard/ns#fn';
 const VCARD_ORG    = 'http://www.w3.org/2006/vcard/ns#Organization';
@@ -120,8 +126,6 @@ const TOPIC_CATEGORIES = {
   ],
 };
 
-const MAX_LEAVES = 20;
-
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 function getSourceId(label) {
   if (label.startsWith('openaire_'))         return 'openaire';
@@ -172,7 +176,7 @@ async function parseTTL() {
 
   const recOf = uuid => {
     let r = byUuid.get(uuid);
-    if (!r) { r = { title: '', label: '', keywords: [], publisher: null, vcardFn: null, dois: [], creators: [] }; byUuid.set(uuid, r); }
+    if (!r) { r = { title: '', label: '', description: '', issued: '', keywords: [], publisher: null, vcardFn: null, dois: [], creators: [] }; byUuid.set(uuid, r); }
     return r;
   };
 
@@ -204,6 +208,8 @@ async function parseTTL() {
 
       if      (p === DCT_TITLE)    d.title = d.title || o;
       else if (p === RDFS_LABEL)   d.label = d.label || o;
+      else if (p === DCT_DESC && !d.description) d.description = o;
+      else if (p === DCT_ISSUED && !d.issued)     d.issued = o;
       else if (p === DCT_PUB)      d.publisher = o;
       else if (p === DCT_CREATOR)  d.creators.push(o);
       else if (p === VCARD_FN && !d.vcardFn) d.vcardFn = o;
@@ -263,42 +269,43 @@ function buildGraph(datasets) {
     for (const [catLabel, members] of Object.entries(buckets)) {
       if (!members.length) continue;
 
-      const clId   = `${srcId}_${slugify(catLabel)}`;
-      const sample = members.slice(0, MAX_LEAVES);
+      const clId = `${srcId}_${slugify(catLabel)}`;
 
       nodes.push({
         id: `cl:${clId}`, level: 1, label: catLabel,
-        domain: srcId, cluster: clId, hue: srcDef.hue, weight: sample.length,
+        domain: srcId, cluster: clId, hue: srcDef.hue, weight: members.length,
       });
       clusterById[clId] = {
         id: clId, label: catLabel, domain: srcId,
-        hue: srcDef.hue, leafCount: sample.length,
+        hue: srcDef.hue, leafCount: members.length,
       };
 
-      sample.forEach((d, li) => {
+      members.forEach((d, li) => {
         const n = {
-          id:        `lf:${clId}:${li}`,
-          level:     2,
-          label:     shortLabel(d.title),   // short display name (5 words)
-          title:     d.title,               // full title for tooltips / panels
-          domain:    srcId,
-          cluster:   clId,
-          hue:       srcDef.hue,
-          weight:    1 + (li * 7) % 8,
-          uri:       d.uri,
-          keywords:  d.keywords.slice(0, 6),
-          publisher: d.publisher,
-          orgName:   d.orgName,
-          vcardFn:   d.vcardFn,
-          authors:   (d.authors || []).slice(0, 8),
-          dois:      d.dois.slice(0, 3),
+          id:          `lf:${clId}:${li}`,
+          level:       2,
+          label:       shortLabel(d.title),   // short display name (5 words)
+          title:       d.title,               // full title for tooltips / panels
+          description: d.description || null,
+          issued:      d.issued || null,
+          domain:      srcId,
+          cluster:     clId,
+          hue:         srcDef.hue,
+          weight:      1 + (li * 7) % 8,
+          uri:         d.uri,
+          keywords:    d.keywords.slice(0, 6),
+          publisher:   d.publisher,
+          orgName:     d.orgName,
+          vcardFn:     d.vcardFn,
+          authors:     (d.authors || []).slice(0, 8),
+          dois:        d.dois.slice(0, 3),
         };
         nodes.push(n);
         leafNodes.push(n);
       });
 
-      taxClusters.push({ id: clId, label: catLabel, leaves: sample.map(d => shortLabel(d.title)) });
-      domLeafCount += sample.length;
+      taxClusters.push({ id: clId, label: catLabel });
+      domLeafCount += members.length;
     }
 
     domainById[srcId] = {
@@ -311,8 +318,8 @@ function buildGraph(datasets) {
   // ─── Phase 3: semantic edges — every edge records WHY it exists ──────────────
   // A pair may be linked by several shared properties; we keep them all as
   // `vias: [{ prop, value }]` and surface the highest-priority one as `via`.
-  // prop ∈ author | doi | contact | org | keyword   (priority high → low)
-  const PROP_PRIORITY = { author: 5, doi: 4, contact: 3, org: 2, keyword: 1 };
+  // prop ∈ author | doi | contact | keyword   (priority high → low)
+  const PROP_PRIORITY = { author: 5, doi: 4, contact: 3, keyword: 1 };
 
   const pairs = new Map();   // "a|b" → { a, b, vias: [{prop,value}] }
 
@@ -332,15 +339,14 @@ function buildGraph(datasets) {
   }
 
   // Build property indexes: shared value → [leafNode, ...]
+  // (orgName is intentionally not indexed — publisher is not a link; see header note)
   const kwIndex     = {};
-  const orgIndex    = {};
   const fnIndex     = {};
   const doiIndex    = {};
   const authorIndex = {};
 
   for (const n of leafNodes) {
     for (const kw of (n.keywords ?? []))    (kwIndex[kw]          ??= []).push(n);
-    if (n.orgName)                           (orgIndex[n.orgName]  ??= []).push(n);
     if (n.vcardFn)                           (fnIndex[n.vcardFn]   ??= []).push(n);
     for (const doi of (n.dois ?? []))       (doiIndex[doi]         ??= []).push(n);
     for (const au of (n.authors ?? []))     (authorIndex[au]       ??= []).push(n);
@@ -359,7 +365,6 @@ function buildGraph(datasets) {
   connectIndex(authorIndex, 12, 'author');                      // dct:creator → pro:Author
   connectIndex(doiIndex,      8, 'doi', v => v.replace(/^https?:\/\/(dx\.)?doi\.org\//, ''));  // datacite:isDescribedBy
   connectIndex(fnIndex,      10, 'contact');                    // vcard:fn
-  connectIndex(orgIndex,     15, 'org');                        // dct:publisher → vcard:Organization
   connectIndex(kwIndex,      12, 'keyword');                    // dcat:keyword
 
   // Emit one edge per linked pair, carrying its reasons.

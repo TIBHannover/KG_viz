@@ -4,11 +4,21 @@
 import * as d3 from 'd3';
 import { EnergyKG } from './data.js';
 
-function colorFor(hue, l = 0.72, c = 0.13) { return `oklch(${l} ${c} ${hue})`; }
+function colorFor(hue, l = 0.58, c = 0.15) { return `oklch(${l} ${c} ${hue})`; }
 
 export function renderAdaptive(container) {
   container.innerHTML = "";
   const KG = EnergyKG;
+
+  // O(1) edge lookups so renderLeaves doesn't do O(nodes × edges) scans
+  const leafNodeById = Object.fromEntries(KG.leafNodes.map(n => [n.id, n]));
+  const edgeIndex = new Map();
+  KG.edges.forEach(e => {
+    if (!edgeIndex.has(e.source)) edgeIndex.set(e.source, []);
+    if (!edgeIndex.has(e.target)) edgeIndex.set(e.target, []);
+    edgeIndex.get(e.source).push(e);
+    edgeIndex.get(e.target).push(e);
+  });
 
   const wrap = document.createElement("div");
   wrap.className = "view-wrap adaptive-wrap";
@@ -82,10 +92,12 @@ export function renderAdaptive(container) {
   // ----- State
   let path = [];
   const history = [[]];
+  let l2DrawFn = null;
 
   const zoom = d3.zoom().scaleExtent([0.5, 8]).on("zoom", (e) => {
     root.attr("transform", e.transform);
     maybeAutoDrill(e.transform.k);
+    if (l2DrawFn) l2DrawFn(e.transform);
   });
   svg.call(zoom);
 
@@ -132,6 +144,10 @@ export function renderAdaptive(container) {
 
   // ----- Render dispatcher
   function render() {
+    l2DrawFn = null;
+    canvasWrap.querySelector('.l2-canvas')?.remove();
+    canvasWrap.querySelector('.conn-panel')?.remove();
+    svg.on("click.l2", null).on("mousedown.l2drag", null).on("mousemove.l2drag", null).on("mouseup.l2drag", null);
     linkLayer.selectAll("*").remove();
     nodeLayer.selectAll("*").remove();
 
@@ -285,8 +301,8 @@ export function renderAdaptive(container) {
       .on("click", (e, d) => drillInto(d.id));
 
     g.append("circle").attr("r", d => d.r).attr("class", "region-bg")
-      .attr("fill", d => `oklch(0.22 0.04 ${d.hue})`)
-      .attr("stroke", d => colorFor(d.hue, 0.7, 0.13));
+      .attr("fill", d => `oklch(0.96 0.035 ${d.hue})`)
+      .attr("stroke", d => colorFor(d.hue, 0.55, 0.14));
 
     g.each(function (d) {
       const grp = d3.select(this);
@@ -357,8 +373,8 @@ export function renderAdaptive(container) {
       .on("click", (e, d) => drillInto(d.id));
 
     g.append("circle").attr("r", d => d.r).attr("class", "region-bg")
-      .attr("fill", d => `oklch(0.24 0.045 ${d.hue})`)
-      .attr("stroke", d => colorFor(d.hue, 0.7, 0.13));
+      .attr("fill", d => `oklch(0.96 0.04 ${d.hue})`)
+      .attr("stroke", d => colorFor(d.hue, 0.55, 0.14));
 
     g.each(function (d) {
       const grp = d3.select(this);
@@ -389,7 +405,6 @@ export function renderAdaptive(container) {
   }
 
   function renderLeaves(domainId, clusterId) {
-    const cl = KG.clusters[clusterId];
     const leaves = KG.leafNodes.filter(n => n.cluster === clusterId).map(n => ({ ...n, _ghost: false }));
     const leafIds = new Set(leaves.map(n => n.id));
 
@@ -397,13 +412,14 @@ export function renderAdaptive(container) {
       .filter(e => leafIds.has(e.source) && leafIds.has(e.target))
       .map(e => ({ ...e, _external: false }));
 
+    // Build ghost entries using O(1) leafNodeById lookup instead of Array.find per edge
     const externalByCluster = {};
     KG.edges.forEach(e => {
       const inS = leafIds.has(e.source), inT = leafIds.has(e.target);
       if (inS === inT) return;
       const localId = inS ? e.source : e.target;
       const remoteId = inS ? e.target : e.source;
-      const remoteNode = KG.leafNodes.find(n => n.id === remoteId);
+      const remoteNode = leafNodeById[remoteId];
       if (!remoteNode) return;
       const rc = remoteNode.cluster;
       if (!externalByCluster[rc]) externalByCluster[rc] = { count: 0, locals: new Set(), hue: remoteNode.hue, domain: remoteNode.domain };
@@ -435,6 +451,7 @@ export function renderAdaptive(container) {
       });
     });
 
+    // Build adj while source/target are still string IDs (before forceLink resolves them)
     const adj = new Map();
     links.forEach(l => {
       if (!adj.has(l.source)) adj.set(l.source, new Set());
@@ -443,18 +460,17 @@ export function renderAdaptive(container) {
       adj.get(l.target).add(l.source);
     });
 
+    // Use edgeIndex (built at module init) to avoid O(leaves × total_edges) scan
     let selectedLeaf = null;
     const externalNeighborsOf = {};
     const externalDegree = {};
     leaves.forEach(n => {
       if (n._ghost) return;
       const ext = [];
-      KG.edges.forEach(e => {
-        let other = null;
-        if (e.source === n.id && !leafIds.has(e.target)) other = e.target;
-        else if (e.target === n.id && !leafIds.has(e.source)) other = e.source;
-        if (other) {
-          const node = KG.leafNodes.find(x => x.id === other);
+      (edgeIndex.get(n.id) || []).forEach(e => {
+        const other = e.source === n.id ? e.target : e.source;
+        if (!leafIds.has(other)) {
+          const node = leafNodeById[other];
           if (node) ext.push(node);
         }
       });
@@ -469,59 +485,149 @@ export function renderAdaptive(container) {
       .force("collide", d3.forceCollide().radius(22))
       .alphaDecay(0.06);
 
-    const linkSel = linkLayer.selectAll("line").data(links).enter().append("line")
-      .attr("class", d => "leaf-link" + (d._external ? " external" : ""));
+    // ----- Canvas setup (overlaid on SVG, pointer-events:none so SVG zoom still works)
+    const l2Canvas = document.createElement("canvas");
+    l2Canvas.className = "l2-canvas";
+    l2Canvas.width = W;
+    l2Canvas.height = H;
+    l2Canvas.style.cssText = "position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:4;";
+    canvasWrap.appendChild(l2Canvas);
+    const ctx = l2Canvas.getContext("2d");
 
-    const g = nodeLayer.selectAll("g.leaf").data(leaves).enter().append("g")
-      .attr("class", d => "leaf" + (d._ghost ? " ghost" : ""))
-      .style("cursor", d => d._ghost ? "pointer" : "grab")
-      .on("mouseenter", (e, d) => selectInfo(d, "leaf"))
-      .on("click", (e, d) => {
-        e.stopPropagation();
-        if (d._ghost) {
-          setPath([d.domain, d.cluster]);
-          return;
+    // Precompute node radius for hit-testing
+    const nodeR = n => n._ghost ? 9 + Math.sqrt(n.weight) * 1.6 : 6 + Math.sqrt(n.weight);
+
+    function draw(xform) {
+      const t = xform || d3.zoomTransform(svg.node());
+      ctx.clearRect(0, 0, W, H);
+      ctx.save();
+      ctx.translate(t.x, t.y);
+      ctx.scale(t.k, t.k);
+      const inv_k = 1 / t.k;
+      const hasSel = selectedLeaf !== null;
+      const nb = hasSel ? (adj.get(selectedLeaf) || new Set()) : null;
+
+      // --- Links ---
+      const lw = inv_k;
+
+      // Internal links: dim pass (when selection active)
+      if (hasSel) {
+        ctx.globalAlpha = 0.06;
+        ctx.strokeStyle = "#8b9199";
+        ctx.lineWidth = lw;
+        ctx.setLineDash([]);
+        ctx.beginPath();
+        for (const l of links) {
+          if (l._external) continue;
+          if (l.source.id === selectedLeaf || l.target.id === selectedLeaf) continue;
+          ctx.moveTo(l.source.x, l.source.y);
+          ctx.lineTo(l.target.x, l.target.y);
         }
-        if (selectedLeaf === d.id) { selectedLeaf = null; clearLeafHL(); }
-        else { selectedLeaf = d.id; highlightLeaf(d); selectInfo(d, "leaf"); }
-      })
-      .call(d3.drag()
-        .on("start", (event, d) => {
-          if (!event.active) sim.alphaTarget(0.3).restart();
-          d.fx = d.x; d.fy = d.y;
-        })
-        .on("drag", (event, d) => { d.fx = event.x; d.fy = event.y; })
-        .on("end", (event, d) => {
-          if (!event.active) sim.alphaTarget(0);
-          if (event.sourceEvent.shiftKey) { d.fx = null; d.fy = null; }
-        })
-      );
+        ctx.stroke();
+      }
 
-    svg.on("click.leaf", () => { selectedLeaf = null; clearLeafHL(); });
+      // Internal links: active or normal
+      ctx.globalAlpha = hasSel ? 0.7 : 0.32;
+      ctx.strokeStyle = "#8b9199";
+      ctx.lineWidth = lw;
+      ctx.setLineDash([]);
+      ctx.beginPath();
+      for (const l of links) {
+        if (l._external) continue;
+        if (hasSel && l.source.id !== selectedLeaf && l.target.id !== selectedLeaf) continue;
+        ctx.moveTo(l.source.x, l.source.y);
+        ctx.lineTo(l.target.x, l.target.y);
+      }
+      ctx.stroke();
 
-    g.append("circle").attr("r", d => d._ghost ? 9 + Math.sqrt(d.weight) * 1.6 : 6 + Math.sqrt(d.weight))
-      .attr("fill", d => d._ghost ? "transparent" : colorFor(d.hue))
-      .attr("stroke", d => colorFor(d.hue, d._ghost ? 0.75 : 0.9, d._ghost ? 0.12 : 0.04))
-      .attr("stroke-width", d => d._ghost ? 1.5 : 1)
-      .attr("stroke-dasharray", d => d._ghost ? "3 3" : null);
+      // External links (to ghosts)
+      ctx.globalAlpha = 0.40;
+      ctx.strokeStyle = "#8b9199";
+      ctx.lineWidth = lw;
+      ctx.setLineDash([3 * inv_k, 3 * inv_k]);
+      ctx.beginPath();
+      for (const l of links) {
+        if (!l._external) continue;
+        if (l.source.x == null || l.target.x == null) continue;
+        ctx.moveTo(l.source.x, l.source.y);
+        ctx.lineTo(l.target.x, l.target.y);
+      }
+      ctx.stroke();
+      ctx.setLineDash([]);
 
-    g.filter(d => !d._ghost && externalDegree[d.id] > 0)
-      .append("text")
-      .attr("class", "ext-badge")
-      .attr("text-anchor", "middle")
-      .attr("dy", "0.32em")
-      .text(d => externalDegree[d.id]);
+      // --- Nodes ---
+      for (const n of leaves) {
+        const r = nodeR(n);
+        let alpha = 1;
+        if (!n._ghost && hasSel) {
+          alpha = n.id === selectedLeaf ? 1 : (nb.has(n.id) ? 0.75 : 0.1);
+        }
+        ctx.globalAlpha = alpha;
 
-    g.append("text").attr("class", d => "leaf-label" + (d._ghost ? " ghost-label" : ""))
-      .attr("dy", d => d._ghost ? 4 : -12)
-      .attr("text-anchor", "middle")
-      .text(d => d._ghost ? `→ ${d.label}` : d.label);
-    g.filter(d => d._ghost).append("text")
-      .attr("class", "ghost-count")
-      .attr("dy", d => 18)
-      .attr("text-anchor", "middle")
-      .text(d => `${d._count} link${d._count === 1 ? "" : "s"}`);
+        if (n._ghost) {
+          // Dashed circle
+          ctx.strokeStyle = colorFor(n.hue, 0.65, 0.12);
+          ctx.lineWidth = 1.5 * inv_k;
+          ctx.setLineDash([3 * inv_k, 3 * inv_k]);
+          ctx.beginPath();
+          ctx.arc(n.x, n.y, r, 0, Math.PI * 2);
+          ctx.stroke();
+          ctx.setLineDash([]);
+          // Ghost label
+          const labelY = n.y + r + 5 * inv_k;
+          ctx.fillStyle = colorFor(n.hue, 0.55, 0.12);
+          ctx.font = `${11 * inv_k}px "Space Grotesk",system-ui`;
+          ctx.textAlign = "center";
+          ctx.textBaseline = "top";
+          ctx.fillText(`→ ${n.label}`, n.x, labelY);
+          ctx.fillStyle = "#8b9199";
+          ctx.font = `${10 * inv_k}px "Space Grotesk",system-ui`;
+          ctx.fillText(`${n._count} link${n._count === 1 ? "" : "s"}`, n.x, labelY + 14 * inv_k);
+        } else {
+          const isSel = n.id === selectedLeaf;
+          const rr = r + (isSel ? 2 * inv_k : 0);
+          ctx.fillStyle = colorFor(n.hue, 0.62, 0.15);
+          ctx.strokeStyle = colorFor(n.hue, 0.88, 0.04);
+          ctx.lineWidth = inv_k;
+          ctx.beginPath();
+          ctx.arc(n.x, n.y, rr, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.stroke();
+          // Ext-degree badge
+          const extD = externalDegree[n.id];
+          if (extD > 0) {
+            ctx.globalAlpha = alpha;
+            ctx.fillStyle = "#ffffff";
+            ctx.font = `bold ${9 * inv_k}px "JetBrains Mono",monospace`;
+            ctx.textAlign = "center";
+            ctx.textBaseline = "middle";
+            ctx.strokeStyle = "rgba(20,30,45,0.4)";
+            ctx.lineWidth = 0.6 * inv_k;
+            ctx.strokeText(extD > 99 ? "99+" : String(extD), n.x, n.y);
+            ctx.fillText(extD > 99 ? "99+" : String(extD), n.x, n.y);
+          }
+          // Leaf label (only when zoomed in enough)
+          if (t.k > 0.4) {
+            const labelAlpha = alpha * Math.min(1, (t.k - 0.3) / 0.5);
+            ctx.globalAlpha = labelAlpha;
+            ctx.fillStyle = "#1b1e23";
+            ctx.font = `${10 * inv_k}px "Space Grotesk",system-ui`;
+            ctx.textAlign = "center";
+            ctx.textBaseline = "bottom";
+            ctx.fillText(n.label.length > 24 ? n.label.slice(0, 22) + "…" : n.label,
+              n.x, n.y - rr - 2 * inv_k);
+          }
+        }
+      }
 
+      ctx.restore();
+      ctx.globalAlpha = 1;
+    }
+
+    l2DrawFn = draw;
+    sim.on("tick", () => draw());
+
+    // ----- connPanel (HTML, unchanged)
     let connPanel = canvasWrap.querySelector(".conn-panel");
     if (!connPanel) {
       connPanel = document.createElement("div");
@@ -531,11 +637,9 @@ export function renderAdaptive(container) {
     connPanel.style.display = "none";
 
     function highlightLeaf(d) {
+      selectedLeaf = d.id;
       const nb = adj.get(d.id) || new Set();
-      g.classed("dim", n => n.id !== d.id && !nb.has(n.id))
-       .classed("focus", n => n.id === d.id);
-      linkSel.classed("active", l => l.source.id === d.id || l.target.id === d.id)
-             .classed("dim", l => !(l.source.id === d.id || l.target.id === d.id));
+      draw();
 
       const internal = leaves.filter(n => !n._ghost && nb.has(n.id));
       const external = externalNeighborsOf[d.id] || [];
@@ -599,7 +703,7 @@ export function renderAdaptive(container) {
         </div>
       `;
       connPanel.querySelector(".conn-close").onclick = () => {
-        selectedLeaf = null; clearLeafHL();
+        selectedLeaf = null; draw(); connPanel.style.display = "none";
       };
       connPanel.querySelectorAll("[data-jump-cluster]").forEach(el => {
         el.addEventListener("click", (ev) => {
@@ -614,20 +718,77 @@ export function renderAdaptive(container) {
           ev.stopPropagation();
           const targetId = el.getAttribute("data-jump-internal");
           const targetNode = leaves.find(n => n.id === targetId);
-          if (targetNode) { selectedLeaf = targetNode.id; highlightLeaf(targetNode); }
+          if (targetNode) highlightLeaf(targetNode);
         });
       });
     }
-    function clearLeafHL() {
-      g.classed("dim", false).classed("focus", false);
-      linkSel.classed("active", false).classed("dim", false);
-      if (connPanel) connPanel.style.display = "none";
+
+    // ----- Mouse interaction on the SVG (canvas has pointer-events:none)
+    // Pointer is taken relative to svg.node() so it matches the zoom transform's
+    // coordinate space (viewBox-aware via getScreenCTM).
+    function worldPt(event) {
+      const t = d3.zoomTransform(svg.node());
+      const [px, py] = d3.pointer(event, svg.node());
+      return [t.invertX(px), t.invertY(py)];
+    }
+    // Hit-test against each node's true radius plus a constant ~4px screen
+    // tolerance. The tolerance is divided by k so it stays 4px at any zoom,
+    // while the radius term keeps the clickable area matched to the drawn node.
+    function findLeafAt(event) {
+      const [wx, wy] = worldPt(event);
+      const t = d3.zoomTransform(svg.node());
+      const slop = 4 / t.k;
+      let best = null, bestD = Infinity;
+      for (const n of leaves) {
+        if (n.x == null) continue;
+        const r = nodeR(n) + slop;
+        const dx = n.x - wx, dy = n.y - wy;
+        const d2 = dx * dx + dy * dy;
+        if (d2 <= r * r && d2 < bestD) { bestD = d2; best = n; }
+      }
+      return best;
     }
 
-    sim.on("tick", () => {
-      linkSel.attr("x1", d => d.source.x).attr("y1", d => d.source.y).attr("x2", d => d.target.x).attr("y2", d => d.target.y);
-      g.attr("transform", d => `translate(${d.x},${d.y})`);
+    let dragging = null, downPt = null, dragMoved = false, suppressClick = false;
+
+    svg.on("click.l2", (event) => {
+      if (suppressClick) { suppressClick = false; return; } // ignore click that ends a drag
+      const n = findLeafAt(event);
+      if (!n) { selectedLeaf = null; draw(); if (connPanel) connPanel.style.display = "none"; return; }
+      if (n._ghost) { setPath([n.domain, n.cluster]); return; }
+      if (selectedLeaf === n.id) { selectedLeaf = null; draw(); connPanel.style.display = "none"; }
+      else { highlightLeaf(n); selectInfo(n, "leaf"); }
     });
+
+    // Drag support via SVG mouse events
+    svg.on("mousedown.l2drag", (event) => {
+      const n = findLeafAt(event);
+      if (!n || n._ghost) return;
+      event.preventDefault();
+      dragging = n; dragMoved = false; downPt = worldPt(event);
+      if (!event.active) sim.alphaTarget(0.3).restart();
+      n.fx = n.x; n.fy = n.y;
+    });
+    svg.on("mousemove.l2drag", (event) => {
+      if (!dragging) return;
+      const [wx, wy] = worldPt(event);
+      if (!dragMoved) {
+        const t = d3.zoomTransform(svg.node());
+        const dx = wx - downPt[0], dy = wy - downPt[1];
+        if ((dx * dx + dy * dy) * t.k * t.k > 9) dragMoved = true; // >3px on screen
+      }
+      if (dragMoved) { dragging.fx = wx; dragging.fy = wy; }
+    });
+    svg.on("mouseup.l2drag", (event) => {
+      if (!dragging) return;
+      sim.alphaTarget(0);
+      if (event.shiftKey) { dragging.fx = null; dragging.fy = null; }
+      if (dragMoved) suppressClick = true; // a real drag — don't let the click select
+      dragging = null;
+    });
+
+    // Clean up SVG event namespaces when navigating away
+    l2DrawFn = (xform) => { draw(xform); };
   }
 
   // ----- Interactions

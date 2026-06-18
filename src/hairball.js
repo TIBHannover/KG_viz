@@ -1,31 +1,43 @@
-// Hairball: dense force-directed view of all leaf nodes + cross/intra edges.
+// Hairball: dense force-directed canvas view of all leaf nodes + cross/intra edges.
 
 import * as d3 from 'd3';
 import { EnergyKG } from './data.js';
 
-function colorFor(hue, lightness = 0.72, chroma = 0.13) {
+function colorFor(hue, lightness = 0.58, chroma = 0.15) {
   return `oklch(${lightness} ${chroma} ${hue})`;
 }
 
-export function renderHairball(container) {
-  container.innerHTML = "";
+// Canvas-safe colour constants (CSS vars don't resolve in canvas context)
+const C_INK   = '#1b1e23';
+const C_INK_3 = '#8b9199';
+const C_TEAL  = 'oklch(0.55 0.12 200)';
+const C_AMBER = 'oklch(0.60 0.16 60)';
 
+const LINK_STYLE = {
+  intra:   { color: C_INK_3, alpha: 0.28 },
+  sibling: { color: C_TEAL,  alpha: 0.28 },
+  cross:   { color: C_AMBER, alpha: 0.20 },
+  hub:     { color: C_INK_3, alpha: 0.36 },
+};
+
+export function renderHairball(container) {
+  container.innerHTML = '';
   const KG = EnergyKG;
   const data = {
     nodes: KG.leafNodes.map(n => ({ ...n })),
     links: KG.edges.map(e => ({ ...e }))
   };
 
-  const wrap = document.createElement("div");
-  wrap.className = "view-wrap hairball-wrap";
+  const wrap = document.createElement('div');
+  wrap.className = 'view-wrap hairball-wrap';
   container.appendChild(wrap);
 
   // Side panel
-  const side = document.createElement("aside");
-  side.className = "side-panel";
+  const side = document.createElement('aside');
+  side.className = 'side-panel';
   side.innerHTML = `
     <div class="panel-title">HAIRBALL</div>
-    <div class="panel-sub">Full topology · ${data.nodes.length} datasets · ${data.links.length} relations</div>
+    <div class="panel-sub">Full topology · ${data.nodes.length.toLocaleString()} datasets · ${data.links.length.toLocaleString()} relations</div>
     <div class="panel-section">
       <div class="panel-h">Selection</div>
       <div id="hb-selected" class="panel-empty">Hover a node to inspect.</div>
@@ -40,148 +52,268 @@ export function renderHairball(container) {
     </div>
     <div class="panel-section">
       <div class="panel-h">Display</div>
-      <label class="toggle"><input type="checkbox" id="hb-cross"> Show cross-domain edges</label>
+      <label class="toggle"><input type="checkbox" id="hb-cross" checked> Show cross-domain edges</label>
       <label class="toggle"><input type="checkbox" id="hb-labels"> Always show labels</label>
     </div>
     <div class="panel-foot">
-      <span class="kbd">click</span> select+highlight · <span class="kbd">drag</span> reposition (stays) · <span class="kbd">shift+drag</span> release back
+      <span class="kbd">click</span> select+highlight ·
+      <span class="kbd">drag</span> reposition (stays) ·
+      <span class="kbd">shift+drag</span> release back
     </div>
   `;
   wrap.appendChild(side);
 
-  // SVG canvas
-  const canvasWrap = document.createElement("div");
-  canvasWrap.className = "canvas-wrap";
+  // Canvas container
+  const canvasWrap = document.createElement('div');
+  canvasWrap.className = 'canvas-wrap';
+  canvasWrap.style.cssText = 'position:relative;overflow:hidden;';
   wrap.appendChild(canvasWrap);
 
-  const W = canvasWrap.clientWidth || 1100;
-  const H = canvasWrap.clientHeight || 800;
+  let W = canvasWrap.clientWidth || 1100;
+  let H = canvasWrap.clientHeight || 800;
 
-  const svg = d3.select(canvasWrap).append("svg")
-    .attr("class", "graph-svg")
-    .attr("width", "100%")
-    .attr("height", "100%")
-    .attr("viewBox", `0 0 ${W} ${H}`);
+  const canvas = document.createElement('canvas');
+  canvas.width  = W;
+  canvas.height = H;
+  canvas.style.cssText = 'display:block;width:100%;height:100%;cursor:default;';
+  canvasWrap.appendChild(canvas);
+  const ctx = canvas.getContext('2d');
 
-  // Defs: glow
-  const defs = svg.append("defs");
-  const f = defs.append("filter").attr("id", "hb-glow").attr("x", "-50%").attr("y", "-50%").attr("width", "200%").attr("height", "200%");
-  f.append("feGaussianBlur").attr("stdDeviation", "2").attr("result", "blur");
-  const merge = f.append("feMerge");
-  merge.append("feMergeNode").attr("in", "blur");
-  merge.append("feMergeNode").attr("in", "SourceGraphic");
-
-  // Subtle grid
-  const grid = svg.append("g").attr("class", "grid-bg");
-  const gridSize = 60;
-  for (let x = 0; x < W; x += gridSize) {
-    grid.append("line").attr("x1", x).attr("y1", 0).attr("x2", x).attr("y2", H);
-  }
-  for (let y = 0; y < H; y += gridSize) {
-    grid.append("line").attr("x1", 0).attr("y1", y).attr("x2", W).attr("y2", y);
-  }
-
-  const root = svg.append("g").attr("class", "zoom-root");
-  const linkLayer = root.append("g").attr("class", "links");
-  const nodeLayer = root.append("g").attr("class", "nodes");
-  const labelLayer = root.append("g").attr("class", "labels");
-
-  const zoom = d3.zoom().scaleExtent([0.2, 6]).on("zoom", (e) => {
-    root.attr("transform", e.transform);
-    labelLayer.attr("opacity", document.getElementById("hb-labels")?.checked ? 1 : (e.transform.k > 1.6 ? 1 : 0));
+  // Pre-compute node colours (only 4 hue values across all domains)
+  const nodeColor  = {}, nodeStroke = {};
+  KG.TAXONOMY.forEach(d => {
+    nodeColor[d.hue]  = colorFor(d.hue);
+    nodeStroke[d.hue] = colorFor(d.hue, 0.42, 0.1);
   });
-  svg.call(zoom);
 
-  const linkSel = linkLayer.selectAll("line").data(data.links).enter().append("line")
-    .attr("class", d => `link link-${d.kind}`)
-    .attr("stroke-width", d => 0.4 + d.weight * 0.6);
+  // State
+  let transform    = d3.zoomIdentity;
+  let selectedId   = null;
+  let hoveredNode  = null;
+  let pinned       = null;
+  let draggingNode = null;
+  let dragDownPt   = null;
+  let dragMoved    = false;
+  let suppressClick = false;
+  const activeDomains = new Set(KG.TAXONOMY.map(d => d.id));
+  const GRID = 60;
 
-  // Adjacency for fast neighbor lookup
+  // ── World-coord helpers ──────────────────────────────────────────────────────
+  function clientToWorld(cx, cy) {
+    const r = canvas.getBoundingClientRect();
+    const px = (cx - r.left) * (W / r.width);
+    const py = (cy - r.top)  * (H / r.height);
+    return { x: (px - transform.x) / transform.k, y: (py - transform.y) / transform.k };
+  }
+
+  // Hit-test against each node's true radius plus a constant ~4px screen
+  // tolerance, so the clickable area always matches the drawn node regardless
+  // of zoom (a fixed world-space threshold was too small zoomed in, too grabby
+  // zoomed out).
+  function findNode(cx, cy) {
+    const { x, y } = clientToWorld(cx, cy);
+    const slop = 4 / transform.k;
+    let best = null, bd = Infinity;
+    for (const n of data.nodes) {
+      if (n.x === undefined) continue;
+      const r = 2.4 + Math.sqrt(n.weight) * 1.6 + slop;
+      const d2 = (n.x - x) ** 2 + (n.y - y) ** 2;
+      if (d2 <= r * r && d2 < bd) { bd = d2; best = n; }
+    }
+    return best;
+  }
+
+  // ── Zoom: skip drag-to-pan when starting on a node ──────────────────────────
+  const zoom = d3.zoom()
+    .scaleExtent([0.04, 8])
+    .filter(e => e.type === 'wheel' || e.button !== 0 || !findNode(e.clientX, e.clientY))
+    .on('zoom', e => { transform = e.transform; draw(); });
+  d3.select(canvas).call(zoom);
+
+  // ── Adjacency (for highlight) ────────────────────────────────────────────────
   const adjacency = new Map();
   data.links.forEach(l => {
-    const s = typeof l.source === "object" ? l.source.id : l.source;
-    const t = typeof l.target === "object" ? l.target.id : l.target;
+    const s = typeof l.source === 'object' ? l.source.id : l.source;
+    const t = typeof l.target === 'object' ? l.target.id : l.target;
     if (!adjacency.has(s)) adjacency.set(s, new Set());
     if (!adjacency.has(t)) adjacency.set(t, new Set());
     adjacency.get(s).add(t);
     adjacency.get(t).add(s);
   });
 
-  let selectedId = null;
-
-  const nodeSel = nodeLayer.selectAll("circle").data(data.nodes).enter().append("circle")
-    .attr("class", "node")
-    .attr("r", d => 2.4 + Math.sqrt(d.weight) * 1.6)
-    .attr("fill", d => colorFor(d.hue))
-    .attr("stroke", d => colorFor(d.hue, 0.9, 0.05))
-    .attr("stroke-width", 0.6)
-    .on("mouseover", (e, d) => showInfo(d, true))
-    .on("mouseout", () => showInfo(null))
-    .on("click", (e, d) => {
-      e.stopPropagation();
-      if (selectedId === d.id) { selectedId = null; clearHighlight(); pinned = null; showInfo(null); }
-      else { selectedId = d.id; highlightNode(d); pinInfo(d); }
-    })
-    .call(d3.drag()
-      .on("start", (event, d) => {
-        if (!event.active) sim.alphaTarget(0.3).restart();
-        d.fx = d.x; d.fy = d.y;
-        d3.select(event.sourceEvent.target).classed("dragging", true);
-      })
-      .on("drag", (event, d) => { d.fx = event.x; d.fy = event.y; })
-      .on("end", (event, d) => {
-        if (!event.active) sim.alphaTarget(0);
-        d3.select(event.sourceEvent.target).classed("dragging", false);
-        if (event.sourceEvent.shiftKey) {
-          d.fx = null; d.fy = null;
-          d3.select(event.sourceEvent.target).classed("pinned", false);
-        } else {
-          d3.select(event.sourceEvent.target).classed("pinned", true);
-        }
-      })
-    );
-
-  svg.on("click", () => {
-    selectedId = null; pinned = null; clearHighlight(); showInfo(null);
+  // ── Mouse events ─────────────────────────────────────────────────────────────
+  canvas.addEventListener('mousemove', e => {
+    if (draggingNode) {
+      const w = clientToWorld(e.clientX, e.clientY);
+      if (!dragMoved) {
+        const dx = w.x - dragDownPt.x, dy = w.y - dragDownPt.y;
+        if ((dx * dx + dy * dy) * transform.k * transform.k > 9) dragMoved = true; // >3px on screen
+      }
+      if (dragMoved) { draggingNode.fx = w.x; draggingNode.fy = w.y; }
+      return; // sim tick → draw()
+    }
+    const n = findNode(e.clientX, e.clientY);
+    if (n !== hoveredNode) {
+      hoveredNode = n;
+      canvas.style.cursor = n ? 'pointer' : 'default';
+      if (!pinned) showInfo(n);
+      draw();
+    }
   });
 
-  function highlightNode(d) {
-    const neighbors = adjacency.get(d.id) || new Set();
-    nodeSel.classed("dim", n => n.id !== d.id && !neighbors.has(n.id))
-           .classed("focus", n => n.id === d.id)
-           .classed("neighbor", n => neighbors.has(n.id));
-    linkSel.classed("active", l => (l.source.id === d.id || l.target.id === d.id))
-           .classed("dim", l => !(l.source.id === d.id || l.target.id === d.id));
-    labelSel.classed("visible", n => n.id === d.id || neighbors.has(n.id));
-  }
-  function clearHighlight() {
-    nodeSel.classed("dim", false).classed("focus", false).classed("neighbor", false);
-    linkSel.classed("active", false).classed("dim", false);
-    labelSel.classed("visible", false);
+  canvas.addEventListener('mousedown', e => {
+    if (e.button !== 0) return;
+    const n = findNode(e.clientX, e.clientY);
+    if (!n) return;
+    draggingNode = n;
+    dragMoved = false;
+    dragDownPt = clientToWorld(e.clientX, e.clientY);
+    n.fx = n.x; n.fy = n.y;
+    sim.alphaTarget(0.3).restart();
+  });
+
+  canvas.addEventListener('mouseup', e => {
+    if (!draggingNode) return;
+    sim.alphaTarget(0);
+    if (e.shiftKey) { draggingNode.fx = null; draggingNode.fy = null; }
+    else { draggingNode.fx = draggingNode.x; draggingNode.fy = draggingNode.y; }
+    if (dragMoved) suppressClick = true; // a real drag — don't let the click toggle selection
+    draggingNode = null;
+  });
+
+  canvas.addEventListener('click', e => {
+    if (suppressClick) { suppressClick = false; return; }
+    const n = findNode(e.clientX, e.clientY);
+    if (n) {
+      if (selectedId === n.id) { selectedId = null; pinned = null; showInfo(null); }
+      else { selectedId = n.id; pinned = n; showInfo(n); }
+    } else {
+      selectedId = null; pinned = null; showInfo(null);
+    }
+    draw();
+  });
+
+  // ── Draw ─────────────────────────────────────────────────────────────────────
+  function draw() {
+    ctx.clearRect(0, 0, W, H);
+
+    // Grid in screen space
+    ctx.strokeStyle = 'rgba(20,30,45,0.04)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    const step = GRID * transform.k;
+    const ox = ((transform.x % step) + step) % step;
+    const oy = ((transform.y % step) + step) % step;
+    for (let x = ox - step; x < W; x += step) { ctx.moveTo(x, 0); ctx.lineTo(x, H); }
+    for (let y = oy - step; y < H; y += step) { ctx.moveTo(0, y); ctx.lineTo(W, y); }
+    ctx.stroke();
+
+    const showCross  = document.getElementById('hb-cross')?.checked !== false;
+    const showLabels = document.getElementById('hb-labels')?.checked === true;
+    const hasSel     = selectedId !== null;
+    const neighbors  = hasSel ? (adjacency.get(selectedId) || new Set()) : null;
+
+    ctx.save();
+    ctx.translate(transform.x, transform.y);
+    ctx.scale(transform.k, transform.k);
+
+    // ── Links batched by kind × highlight bucket (4 stroke() calls per kind) ──
+    const batches = {};
+    for (const l of data.links) {
+      if (typeof l.source !== 'object') continue; // forceLink not yet resolved
+      const sd = l.source.domain, td = l.target.domain;
+      if (!showCross && l.kind === 'cross') continue;
+      if (!activeDomains.has(sd) || !activeDomains.has(td)) continue;
+      const kind = l.kind || 'cross';
+      if (!batches[kind]) batches[kind] = { normal: [], active: [], dim: [] };
+      if (hasSel) {
+        const active = l.source.id === selectedId || l.target.id === selectedId;
+        (active ? batches[kind].active : batches[kind].dim).push(l);
+      } else {
+        batches[kind].normal.push(l);
+      }
+    }
+    ctx.lineWidth = 0.55;
+    for (const [kind, b] of Object.entries(batches)) {
+      const s = LINK_STYLE[kind] || LINK_STYLE.cross;
+      ctx.strokeStyle = s.color;
+      for (const [bucket, alpha] of [
+        [b.normal, s.alpha],
+        [b.active, Math.min(1, s.alpha * 3.2)],
+        [b.dim,    0.016],
+      ]) {
+        if (!bucket.length) continue;
+        ctx.globalAlpha = alpha;
+        ctx.beginPath();
+        for (const l of bucket) {
+          ctx.moveTo(l.source.x, l.source.y);
+          ctx.lineTo(l.target.x, l.target.y);
+        }
+        ctx.stroke();
+      }
+    }
+
+    // ── Nodes ─────────────────────────────────────────────────────────────────
+    ctx.lineWidth = 0.6;
+    for (const n of data.nodes) {
+      if (n.x === undefined) continue;
+      const active      = activeDomains.has(n.domain);
+      const isSelected  = n.id === selectedId;
+      const isNeighbor  = hasSel && neighbors.has(n.id);
+      const isHovered   = n === hoveredNode;
+
+      ctx.globalAlpha = !active ? 0.04
+        : hasSel ? (isSelected ? 1 : isNeighbor ? 0.82 : 0.07)
+        : (isHovered ? 1 : 0.8);
+
+      const r = 2.4 + Math.sqrt(n.weight) * 1.6 + (isSelected || isHovered ? 1.4 : 0);
+      ctx.fillStyle   = nodeColor[n.hue]  || colorFor(n.hue);
+      ctx.strokeStyle = nodeStroke[n.hue] || colorFor(n.hue, 0.42, 0.1);
+      ctx.beginPath();
+      ctx.arc(n.x, n.y, r, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+    }
+
+    // ── Labels ────────────────────────────────────────────────────────────────
+    if (showLabels || transform.k > 1.6) {
+      ctx.globalAlpha  = showLabels ? 0.82 : Math.min(1, (transform.k - 1.6) / 0.6);
+      ctx.fillStyle    = C_INK;
+      ctx.font         = `${Math.max(7, 9 / transform.k)}px "Space Grotesk",system-ui,sans-serif`;
+      ctx.textAlign    = 'center';
+      ctx.textBaseline = 'bottom';
+      for (const n of data.nodes) {
+        if (n.x === undefined || !activeDomains.has(n.domain)) continue;
+        if (hasSel && n.id !== selectedId && !neighbors.has(n.id)) continue;
+        ctx.fillText(n.label, n.x, n.y - (2.4 + Math.sqrt(n.weight) * 1.6) - 1);
+      }
+    }
+
+    ctx.restore();
+    ctx.globalAlpha = 1;
   }
 
-  const labelSel = labelLayer.selectAll("text").data(data.nodes).enter().append("text")
-    .attr("class", "node-label")
-    .attr("dy", -8)
-    .text(d => d.label);
-
-  // Force simulation
+  // ── Force simulation ─────────────────────────────────────────────────────────
   const sim = d3.forceSimulation(data.nodes)
-    .force("link", d3.forceLink(data.links).id(d => d.id).distance(d => d.kind === "cross" ? 90 : 35).strength(d => d.kind === "cross" ? 0.05 : 0.5))
-    .force("charge", d3.forceManyBody().strength(-22).distanceMax(280))
-    .force("center", d3.forceCenter(W / 2, H / 2))
-    .force("collide", d3.forceCollide().radius(d => 4 + Math.sqrt(d.weight)))
-    .force("domain", domainCenterForce())
+    .force('link', d3.forceLink(data.links).id(d => d.id)
+      .distance(d => d.kind === 'cross' ? 90 : 35)
+      .strength(d => d.kind === 'cross' ? 0.05 : 0.5))
+    .force('charge', d3.forceManyBody().strength(-22).distanceMax(280))
+    .force('center',  d3.forceCenter(W / 2, H / 2))
+    .force('collide', d3.forceCollide().radius(d => 4 + Math.sqrt(d.weight)))
+    .force('domain',  domainCenterForce())
     .alphaDecay(0.03)
-    .on("tick", ticked);
+    .on('tick', draw);
 
-  // Domain centroid force pulls each node toward its domain's polar position
   function domainCenterForce() {
     const domains = KG.TAXONOMY.map(d => d.id);
     const centers = {};
     domains.forEach((id, i) => {
-      const a = (i / domains.length) * Math.PI * 2 - Math.PI/2;
-      centers[id] = { x: W/2 + Math.cos(a) * Math.min(W,H) * 0.28, y: H/2 + Math.sin(a) * Math.min(W,H) * 0.28 };
+      const a = (i / domains.length) * Math.PI * 2 - Math.PI / 2;
+      centers[id] = {
+        x: W / 2 + Math.cos(a) * Math.min(W, H) * 0.28,
+        y: H / 2 + Math.sin(a) * Math.min(W, H) * 0.28,
+      };
     });
     return function(alpha) {
       for (const n of data.nodes) {
@@ -193,85 +325,68 @@ export function renderHairball(container) {
     };
   }
 
-  function ticked() {
-    linkSel.attr("x1", d => d.source.x).attr("y1", d => d.source.y).attr("x2", d => d.target.x).attr("y2", d => d.target.y);
-    nodeSel.attr("cx", d => d.x).attr("cy", d => d.y);
-    labelSel.attr("x", d => d.x).attr("y", d => d.y);
-  }
-
-  // Legend & filter
-  const legend = document.getElementById("hb-legend");
-  const filter = document.getElementById("hb-filter");
-  const activeDomains = new Set(KG.TAXONOMY.map(d => d.id));
-
+  // ── Legend & domain chips ────────────────────────────────────────────────────
   KG.TAXONOMY.forEach(dom => {
-    const item = document.createElement("div");
-    item.className = "legend-item";
-    item.innerHTML = `<span class="dot" style="background:${colorFor(dom.hue)}"></span><span class="name">${dom.label}</span><span class="count">${KG.domains[dom.id].leafCount}</span>`;
-    legend.appendChild(item);
+    const item = document.createElement('div');
+    item.className = 'legend-item';
+    item.innerHTML = `
+      <span class="dot" style="background:${colorFor(dom.hue)}"></span>
+      <span class="name">${dom.label}</span>
+      <span class="count">${KG.domains[dom.id].leafCount.toLocaleString()}</span>`;
+    document.getElementById('hb-legend').appendChild(item);
 
-    const chip = document.createElement("button");
-    chip.className = "chip active";
-    chip.dataset.id = dom.id;
+    const chip = document.createElement('button');
+    chip.className = 'chip active';
     chip.innerHTML = `<span class="dot" style="background:${colorFor(dom.hue)}"></span>${dom.label}`;
     chip.onclick = () => {
-      if (activeDomains.has(dom.id)) { activeDomains.delete(dom.id); chip.classList.remove("active"); }
-      else { activeDomains.add(dom.id); chip.classList.add("active"); }
-      applyFilter();
+      if (activeDomains.has(dom.id)) { activeDomains.delete(dom.id); chip.classList.remove('active'); }
+      else { activeDomains.add(dom.id); chip.classList.add('active'); }
+      draw();
     };
-    filter.appendChild(chip);
+    document.getElementById('hb-filter').appendChild(chip);
   });
 
-  function applyFilter() {
-    nodeSel.attr("opacity", d => activeDomains.has(d.domain) ? 1 : 0.05);
-    linkSel.attr("opacity", d => activeDomains.has(d.source.domain) && activeDomains.has(d.target.domain) ? null : 0.02);
-  }
+  document.getElementById('hb-cross').addEventListener('change', draw);
+  document.getElementById('hb-labels').addEventListener('change', draw);
 
-  const crossBox = document.getElementById("hb-cross");
-  const labelBox = document.getElementById("hb-labels");
-  function applyCross() {
-    const show = crossBox.checked;
-    linkSel.attr("display", d => (!show && d.kind === "cross") ? "none" : null);
-  }
-  crossBox.checked = true; applyCross();
-  crossBox.addEventListener("change", applyCross);
-  labelBox.addEventListener("change", () => labelLayer.attr("opacity", labelBox.checked ? 1 : 0));
-
-  // Info panel
-  let pinned = null;
-  const infoEl = document.getElementById("hb-selected");
+  // ── Info panel ───────────────────────────────────────────────────────────────
+  const infoEl = document.getElementById('hb-selected');
   function showInfo(d) {
     if (!d && !pinned) { infoEl.innerHTML = `<div class="panel-empty">Hover a node to inspect.</div>`; return; }
-    const target = d || pinned;
-    const dom = KG.domains[target.domain];
-    const cl = KG.clusters[target.cluster];
-    const neighbors = data.links.filter(l =>
-      (l.source.id === target.id || l.target.id === target.id)
-    ).length;
+    const t   = d || pinned;
+    const dom = KG.domains[t.domain];
+    const cl  = KG.clusters[t.cluster];
+    const deg = (adjacency.get(t.id) || new Set()).size;
     infoEl.innerHTML = `
-      <div class="info-name" style="border-left-color:${colorFor(target.hue)}">${target.title || target.label}</div>
+      <div class="info-name" style="border-left-color:${colorFor(t.hue)}">${t.title || t.label}</div>
       <div class="info-meta">
         <div><span>Domain</span><b>${dom.label}</b></div>
         <div><span>Cluster</span><b>${cl.label}</b></div>
-        <div><span>Edges</span><b>${neighbors}</b></div>
-        <div><span>Weight</span><b>${target.weight}</b></div>
+        <div><span>Edges</span><b>${deg}</b></div>
       </div>
+      ${t.description ? `<div class="info-desc" style="font-size:10.5px;color:var(--ink-2);margin-top:6px;line-height:1.5;">${t.description.slice(0, 240)}${t.description.length > 240 ? '…' : ''}</div>` : ''}
     `;
   }
-  function pinInfo(d) { pinned = d; showInfo(d); }
 
-  const resetBtn = document.createElement("button");
-  resetBtn.className = "panel-btn";
-  resetBtn.textContent = "Release all pinned nodes";
+  const resetBtn = document.createElement('button');
+  resetBtn.className = 'panel-btn';
+  resetBtn.textContent = 'Release all pinned nodes';
   resetBtn.onclick = () => {
     data.nodes.forEach(n => { n.fx = null; n.fy = null; });
-    nodeSel.classed("pinned", false);
     sim.alpha(0.6).restart();
   };
   side.appendChild(resetBtn);
 
+  // ── Resize ───────────────────────────────────────────────────────────────────
+  const ro = new ResizeObserver(() => {
+    W = canvasWrap.clientWidth; H = canvasWrap.clientHeight;
+    canvas.width = W; canvas.height = H;
+    draw();
+  });
+  ro.observe(canvasWrap);
+
   // Initial fit
   setTimeout(() => {
-    svg.transition().duration(600).call(zoom.transform, d3.zoomIdentity.translate(0, 0).scale(0.9));
-  }, 200);
+    d3.select(canvas).call(zoom.transform, d3.zoomIdentity.scale(0.9));
+  }, 150);
 }

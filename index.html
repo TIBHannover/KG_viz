@@ -8,37 +8,29 @@
   <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
   <style>
     :root {
-      --bg: #0b0a09;
-      --bg-2: #131110;
-      --bg-3: #1b1816;
-      --line: #2a2623;
-      --line-2: #3a3530;
-      --ink: #ece7df;
-      --ink-2: #b3aca0;
-      --ink-3: #6e6860;
-      --amber: oklch(0.78 0.15 65);
-      --amber-soft: oklch(0.78 0.15 65 / 0.18);
-      --teal: oklch(0.78 0.10 200);
-      --grid: rgba(255, 240, 220, 0.025);
-      --grid-strong: rgba(255, 240, 220, 0.05);
-      --shadow: 0 20px 60px -20px rgba(0,0,0,0.6);
+      --bg: #ffffff;
+      --bg-2: #f6f7f9;
+      --bg-3: #eceef1;
+      --line: #e5e8ec;
+      --line-2: #cfd4da;
+      --ink: #1b1e23;
+      --ink-2: #565b63;
+      --ink-3: #8b9199;
+      --amber: oklch(0.60 0.16 60);
+      --amber-soft: oklch(0.60 0.16 60 / 0.12);
+      --teal: oklch(0.55 0.12 200);
+      --grid: rgba(20, 30, 45, 0.04);
+      --grid-strong: rgba(20, 30, 45, 0.065);
+      --shadow: 0 14px 40px -16px rgba(20, 30, 55, 0.18);
       font-family: "Space Grotesk", system-ui, sans-serif;
     }
     * { box-sizing: border-box; }
     html, body { margin:0; padding:0; height:100%; background:var(--bg); color:var(--ink); }
     body {
       background-image:
-        radial-gradient(1200px 600px at 80% -10%, oklch(0.30 0.06 65 / 0.25), transparent 60%),
-        radial-gradient(900px 500px at 0% 110%, oklch(0.30 0.05 200 / 0.18), transparent 55%);
+        radial-gradient(1200px 600px at 80% -10%, oklch(0.95 0.03 65 / 0.55), transparent 60%),
+        radial-gradient(900px 500px at 0% 110%, oklch(0.95 0.03 200 / 0.45), transparent 55%);
       background-attachment: fixed;
-    }
-    /* tiny grain */
-    body::before {
-      content:""; position:fixed; inset:0; pointer-events:none; z-index:0;
-      background-image: radial-gradient(rgba(255,255,255,0.025) 1px, transparent 1px);
-      background-size: 3px 3px;
-      mix-blend-mode: overlay;
-      opacity: 0.35;
     }
 
     #app { position:relative; z-index:1; height:100vh; display:flex; flex-direction:column; }
@@ -205,7 +197,7 @@
 
     .grid-bg line { stroke: var(--grid); stroke-width: 1; }
     .map-grid line { stroke: var(--grid-strong); }
-    .map-grid line:nth-child(5n) { stroke: rgba(255, 200, 150, 0.06); }
+    .map-grid line:nth-child(5n) { stroke: rgba(20, 30, 45, 0.07); }
 
     /* Compass */
     .rose-ring { fill: none; stroke: var(--line-2); }
@@ -213,11 +205,11 @@
     .rose-tick { fill: var(--ink-3); font-family:"JetBrains Mono", monospace; font-size: 10px; letter-spacing:0.1em; }
 
     /* Hairball */
-    .link { stroke-opacity: 0.18; transition: stroke-opacity 0.15s, stroke 0.15s, stroke-width 0.15s; }
-    .link-intra { stroke: var(--ink-2); stroke-opacity: 0.18; }
-    .link-sibling { stroke: var(--teal); stroke-opacity: 0.16; }
-    .link-cross { stroke: var(--amber); stroke-opacity: 0.10; }
-    .link-hub { stroke: var(--amber); stroke-opacity: 0.22; }
+    .link { stroke-opacity: 0.28; transition: stroke-opacity 0.15s, stroke 0.15s, stroke-width 0.15s; }
+    .link-intra { stroke: var(--ink-3); stroke-opacity: 0.30; }
+    .link-sibling { stroke: var(--teal); stroke-opacity: 0.30; }
+    .link-cross { stroke: var(--amber); stroke-opacity: 0.22; }
+    .link-hub { stroke: var(--amber); stroke-opacity: 0.38; }
     .link.dim { stroke-opacity: 0.03 !important; }
     .link.active { stroke: var(--amber) !important; stroke-opacity: 0.9 !important; stroke-width: 1.4 !important; }
     .node { transition: opacity 0.15s, r 0.15s, stroke 0.15s; cursor: grab; }
@@ -246,15 +238,15 @@
     /* Adaptive leaf highlight */
     .leaf.dim { opacity: 0.18; }
     .leaf.focus circle { stroke: var(--amber) !important; stroke-width: 2.5 !important; filter: drop-shadow(0 0 8px var(--amber)); }
-    .leaf-link { stroke: var(--ink-2); stroke-opacity: 0.25; stroke-width: 1; transition: stroke-opacity 0.15s, stroke 0.15s; }
-    .leaf-link.external { stroke: var(--amber); stroke-opacity: 0.35; stroke-dasharray: 4 4; }
+    .leaf-link { stroke: var(--ink-3); stroke-opacity: 0.38; stroke-width: 1; transition: stroke-opacity 0.15s, stroke 0.15s; }
+    .leaf-link.external { stroke: var(--amber); stroke-opacity: 0.5; stroke-dasharray: 4 4; }
     .leaf-link.dim { stroke-opacity: 0.05; }
     .leaf-link.active { stroke: var(--amber); stroke-opacity: 0.9; stroke-width: 1.6; }
     .leaf.ghost circle { transition: stroke 0.15s, filter 0.15s; }
     .leaf.ghost:hover circle { stroke: var(--amber) !important; filter: drop-shadow(0 0 6px var(--amber)); }
     .ghost-label { fill: var(--amber) !important; font-family: "JetBrains Mono", monospace; font-size: 10px !important; letter-spacing: 0.04em; }
     .ghost-count { fill: var(--ink-3); font-family: "JetBrains Mono", monospace; font-size: 9px; pointer-events: none; }
-    .ext-badge { fill: #0b0a09; font-family: "JetBrains Mono", monospace; font-size: 10px; font-weight: 600; pointer-events: none; paint-order: stroke; stroke: rgba(255,255,255,0.4); stroke-width: 0.4px; }
+    .ext-badge { fill: #ffffff; font-family: "JetBrains Mono", monospace; font-size: 10px; font-weight: 600; pointer-events: none; paint-order: stroke; stroke: rgba(20,30,45,0.35); stroke-width: 0.6px; }
 
     /* Connections panel (top-right of L2 canvas) */
     .conn-panel {
@@ -320,7 +312,7 @@
     .conn-empty.pad { padding: 6px 0 4px; }
 
     /* Adaptive */
-    .agg-link { fill:none; stroke: var(--ink-2); stroke-opacity: 0.25; }
+    .agg-link { fill:none; stroke: var(--ink-3); stroke-opacity: 0.35; }
     .region-bg {
       transition: filter 0.2s, transform 0.2s;
       stroke-width: 1.2;
@@ -330,7 +322,7 @@
     .region.dim { opacity: 0.4; }
     .region-label {
       fill: var(--ink); font-size: 16px; font-weight: 500; pointer-events:none;
-      paint-order: stroke; stroke: rgba(0,0,0,0.4); stroke-width: 3px;
+      paint-order: stroke; stroke: rgba(255,255,255,0.75); stroke-width: 3px;
     }
     .region-meta {
       fill: var(--ink-3); font-family:"JetBrains Mono", monospace; font-size: 10px;
@@ -409,6 +401,34 @@
     }
     .sm-sort-btn:hover { border-color: var(--line-2); color: var(--ink-2); }
     .sm-sort-btn.active { border-color: var(--amber); color: var(--amber); background: var(--amber-soft); }
+
+    .sm-facet-row { flex-wrap: wrap; }
+    .sm-facet-label {
+      font-family: "JetBrains Mono", monospace; font-size: 9.5px; letter-spacing: 0.12em;
+      text-transform: uppercase; color: var(--ink-3); margin-right: 2px;
+    }
+    .sm-facet-chip {
+      background: var(--bg-2); border: 1px solid var(--line); color: var(--ink-3);
+      font-family: inherit; font-size: 10px; padding: 3px 8px; border-radius: 99px;
+      cursor: pointer; letter-spacing: 0.02em; transition: all 0.12s; display: inline-flex; gap: 4px; align-items: center;
+    }
+    .sm-facet-chip:hover { border-color: var(--line-2); color: var(--ink-2); }
+    .sm-facet-chip.active { border-color: var(--teal); color: var(--teal); background: oklch(0.55 0.12 200 / 0.12); }
+    .sm-facet-glyph { opacity: 0.8; }
+    .sm-facet-clear {
+      background: none; border: none; color: var(--ink-3); font-family: "JetBrains Mono", monospace;
+      font-size: 10px; cursor: pointer; padding: 2px 4px; text-decoration: underline; opacity: 0.8;
+    }
+    .sm-facet-clear:hover { color: var(--ink-2); }
+
+    .ego-tip {
+      position: absolute; z-index: 40; pointer-events: none;
+      background: var(--bg); border: 1px solid var(--line-2); border-radius: 5px;
+      padding: 6px 9px; font-size: 10.5px; line-height: 1.4; color: var(--ink);
+      max-width: 300px; box-shadow: var(--shadow); letter-spacing: 0.01em;
+    }
+    .ego-via-marker polygon { transition: filter 0.1s, stroke-width 0.1s; }
+    .ego-via-marker:hover polygon { filter: brightness(0.96) saturate(1.2); stroke-width: 1.8; }
 
     .sm-view-btn {
       background: transparent; border: 1px solid transparent; color: var(--ink-3);
@@ -503,13 +523,45 @@
     .sm-kind-sw { width: 14px; height: 3px; border-radius: 2px; }
     .sm-kind-desc { color: var(--ink-3); font-size: 10px; }
 
-    /* ── Split layout: matrix ½ · detail table ½ ── */
+    /* ── Three-column layout: matrix | tiles | egonet ── */
+    .sm-three-col { display: flex; height: 100%; width: 100%; overflow: hidden; }
+    .sm-col-matrix {
+      flex: 0 0 auto; width: 44%; min-width: 0;
+      display: flex; flex-direction: column;
+      border-right: 1px solid var(--line); overflow: hidden;
+      transition: width 0.38s cubic-bezier(0.4,0,0.2,1);
+    }
+    .sm-col-tiles {
+      flex: 1 1 auto; min-width: 0; overflow: hidden;
+      display: flex; flex-direction: column; background: var(--bg);
+    }
+    .sm-col-ego {
+      flex: 0 0 auto; width: 0; min-width: 0; overflow: hidden;
+      display: flex; flex-direction: column;
+      border-left: 1px solid var(--line);
+      transition: width 0.38s cubic-bezier(0.4,0,0.2,1);
+      position: relative;
+    }
+    .sm-three-col.ego-open .sm-col-matrix { width: 0; }
+    .sm-three-col.ego-open .sm-col-ego { width: 56%; }
+
+    /* Close button overlaid at top of ego col */
+    .ego-col-close {
+      position: absolute; top: 8px; right: 10px; z-index: 10;
+      background: var(--bg-2); border: 1px solid var(--line); color: var(--ink-3);
+      font-family: inherit; font-size: 10px; letter-spacing: 0.06em;
+      padding: 3px 10px; border-radius: 999px; cursor: pointer;
+      transition: all 0.12s;
+    }
+    .ego-col-close:hover { border-color: var(--amber); color: var(--amber); }
+
+    /* ── Split layout (kept for reference) ── */
     .sm-split { display: flex; height: 100%; width: 100%; }
     .sm-matrix-pane {
       flex: 1 1 50%; min-width: 0; display: flex; flex-direction: column;
       border-right: 1px solid var(--line); overflow: hidden;
     }
-    .sm-matrix-scroll { flex: 1; overflow: auto; padding: 6px 10px; }
+    .sm-matrix-scroll { flex: 1; overflow: auto; padding: 6px 10px; display: flex; }
     .sm-matrix-scroll::-webkit-scrollbar { width: 7px; height: 7px; }
     .sm-matrix-scroll::-webkit-scrollbar-thumb { background: var(--line-2); border-radius: 3px; }
 
@@ -612,7 +664,7 @@
     .ego-breadcrumb {
       position: absolute; top: 10px; left: 10px; right: 10px; z-index: 6;
       display: flex; align-items: center; gap: 4px; flex-wrap: wrap;
-      padding: 7px 10px; background: oklch(0.16 0.01 65 / 0.86); backdrop-filter: blur(4px);
+      padding: 7px 10px; background: rgba(255,255,255,0.88); backdrop-filter: blur(4px);
       border: 1px solid var(--line); border-radius: 8px;
       pointer-events: none;   /* let clicks fall through to cards; crumbs re-enable below */
     }
@@ -700,7 +752,7 @@
 
     .ego-legend {
       position: absolute; bottom: 14px; left: 14px; z-index: 6;
-      background: oklch(0.16 0.01 65 / 0.9); backdrop-filter: blur(4px);
+      background: rgba(255,255,255,0.9); backdrop-filter: blur(4px);
       border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px;
       font-size: 10px; color: var(--ink-2); line-height: 1.5; max-width: 220px;
     }
@@ -708,6 +760,80 @@
     .ego-leg-sw { width: 16px; height: 3px; border-radius: 2px; flex-shrink: 0; }
     .ego-leg-desc { color: var(--ink-3); }
     .ego-leg-gly { width: 16px; text-align: center; color: var(--amber); flex-shrink: 0; }
+
+    /* Egonet selected-node detail panel (top-right) */
+    .ego-detail {
+      position: absolute; top: 54px; right: 14px; z-index: 6;
+      width: 286px; max-height: calc(100% - 76px); overflow-y: auto;
+      background: rgba(255,255,255,0.94); backdrop-filter: blur(5px);
+      border: 1px solid var(--line); border-radius: 10px; padding: 13px 14px;
+      box-shadow: var(--shadow); display: flex; flex-direction: column; gap: 9px;
+    }
+    .ego-detail::-webkit-scrollbar { width: 6px; }
+    .ego-detail::-webkit-scrollbar-thumb { background: var(--line-2); border-radius: 3px; }
+    .ego-detail-head { display: flex; align-items: center; gap: 8px; }
+    .ego-detail-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+    .ego-detail-kicker {
+      font-family: "JetBrains Mono", monospace; font-size: 9px; letter-spacing: 0.16em; color: var(--ink-3);
+    }
+    .ego-detail-deg {
+      margin-left: auto; font-family: "JetBrains Mono", monospace; font-size: 9px; color: var(--amber);
+      border: 1px solid var(--amber); border-radius: 3px; padding: 0 6px;
+    }
+    .ego-detail-title { font-size: 13px; font-weight: 500; color: var(--ink); line-height: 1.4; }
+    .ego-detail-meta { font-family: "JetBrains Mono", monospace; font-size: 9px; color: var(--ink-3); letter-spacing: 0.03em; }
+    .ego-detail-sec { display: flex; flex-direction: column; gap: 5px; }
+    .ego-detail-k {
+      font-family: "JetBrains Mono", monospace; font-size: 9px; letter-spacing: 0.1em;
+      text-transform: uppercase; color: var(--ink-3);
+    }
+    .ego-detail-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+    .ego-detail-chip {
+      font-size: 10px; padding: 2px 6px; border: 1px solid var(--line-2); border-radius: 3px;
+      color: var(--ink-2); line-height: 1.4;
+    }
+    .ego-detail-desc {
+      font-size: 10.5px; line-height: 1.55; color: var(--ink-2);
+    }
+    .ego-detail-link {
+      font-family: "JetBrains Mono", monospace; font-size: 10px; color: var(--teal);
+      text-decoration: none; word-break: break-all; line-height: 1.5;
+    }
+    .ego-detail-link:hover { text-decoration: underline; }
+    .ego-detail-open, .ego-detail-recenter {
+      font-family: "JetBrains Mono", monospace; font-size: 10px; letter-spacing: 0.04em;
+      padding: 6px 10px; border-radius: 5px; text-align: center; cursor: pointer; border: 1px solid var(--amber);
+      color: var(--amber); background: var(--amber-soft); text-decoration: none; display: block;
+    }
+    .ego-detail-open:hover, .ego-detail-recenter:hover { background: var(--amber); color: #fff; }
+    .ego-detail-recenter { width: 100%; font-family: inherit; font-size: 11px; }
+
+    /* Per-card detail popover (anchored below a node, in graph space) */
+    .ego-pop {
+      box-sizing: border-box; width: 100%; max-height: 400px; overflow-y: auto;
+      background: rgba(255,255,255,0.97); backdrop-filter: blur(5px);
+      border: 1px solid var(--line); border-radius: 10px; padding: 12px 13px;
+      box-shadow: var(--shadow); display: flex; flex-direction: column; gap: 9px;
+      font-family: "Space Grotesk", system-ui, sans-serif;
+    }
+    .ego-pop::-webkit-scrollbar { width: 6px; }
+    .ego-pop::-webkit-scrollbar-thumb { background: var(--line-2); border-radius: 3px; }
+    .ego-pop-head { display: flex; align-items: center; gap: 8px; }
+    .ego-pop-close {
+      margin-left: 4px; background: transparent; border: none; color: var(--ink-3);
+      font-size: 17px; line-height: 1; cursor: pointer; padding: 0 2px; flex-shrink: 0;
+    }
+    .ego-pop-close:hover { color: var(--amber); }
+    /* Chevron toggle on each card header */
+    .ego-pop-toggle {
+      margin-left: 4px; flex-shrink: 0; box-sizing: border-box;
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 18px; height: 18px; padding: 0;
+      background: transparent; border: 1px solid var(--line-2); color: var(--ink-3);
+      border-radius: 5px; font-size: 8px; line-height: 1; cursor: pointer; transition: all 0.12s;
+    }
+    .ego-pop-toggle:hover { border-color: var(--amber); color: var(--amber); }
+    .ego-pop-toggle.open { color: var(--amber); border-color: var(--amber); background: var(--amber-soft); }
   </style>
 </head>
 <body>
