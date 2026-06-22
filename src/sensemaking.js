@@ -131,6 +131,8 @@ export function renderSensemaking(container) {
   let bundleSvg = null, bundleLeaves = {};
   let tileFilter = { mode: 'all' };       // {mode:'all'} | {mode:'cluster',id} | {mode:'pair',a,b}
   let relFacet = new Set();               // "Linked via" facet: subset of author|doi|contact|org|keyword (empty = all)
+  let tileView = 'tiles';                 // 'tiles' (card grid) | 'table' (dense, sortable comparison)
+  let tableColW = {};                     // table view: drag-resized column widths (px), keyed by column key
   let egoTrail = [];
   let egoPane = null;                     // current ego column DOM node (set by renderEgonet)
 
@@ -166,6 +168,10 @@ export function renderSensemaking(container) {
             <input id="sm-search" autocomplete="off" placeholder="Search datasets — title · keyword · author…">
             <button class="sm-sort-btn active" data-sort="degree">Total deg</button>
             <button class="sm-sort-btn" data-sort="external">External</button>
+            <div class="sm-view-toggle">
+              <button data-view="tiles" class="${tileView === 'tiles' ? 'active' : ''}" title="Card grid — best for small result sets">▦</button>
+              <button data-view="table" class="${tileView === 'table' ? 'active' : ''}" title="Dense table — best for ranking &amp; comparison">≣</button>
+            </div>
           </div>
           <div class="sm-tiles-row sm-facet-row" id="sm-facet-row">
             <span class="sm-facet-label">Linked via</span>
@@ -195,6 +201,11 @@ export function renderSensemaking(container) {
     threecol.querySelectorAll('.sm-sort-btn').forEach(b => b.addEventListener('click', () => {
       sortMode = b.dataset.sort;
       threecol.querySelectorAll('.sm-sort-btn').forEach(x => x.classList.toggle('active', x.dataset.sort === sortMode));
+      renderTiles();
+    }));
+    threecol.querySelectorAll('.sm-view-toggle button').forEach(b => b.addEventListener('click', () => {
+      tileView = b.dataset.view;
+      threecol.querySelectorAll('.sm-view-toggle button').forEach(x => x.classList.toggle('active', x.dataset.view === tileView));
       renderTiles();
     }));
 
@@ -602,28 +613,86 @@ export function renderSensemaking(container) {
     if (clearBtn) clearBtn.onclick = () => { matrixHighlightCluster = null; applyLeftHighlight(null); setTileFilter({ mode: 'all' }); };
 
     const cap = 300;
-    grid.innerHTML = list.slice(0, cap).map(n => {
+    const shown = list.slice(0, cap);
+    // Dedup + cap a node's provenance edges into ≤3 distinct via-chips (shared by both views)
+    const viaChipsFor = (n, len) => {
       const viaInfo = viaByNode?.[n.id];
-      const viaChips = viaInfo
-        ? [...new Map(viaInfo.map(v => [`${v.via?.prop}:${v.via?.value}`, v.via])).values()].slice(0, 3)
-            .map(v => `<span class="sm-tile-via-chip" title="${esc(PROP_META[v?.prop]?.predicate || '')}">${PROP_META[v?.prop]?.glyph || '·'} ${esc(clip(v?.value || '', 18))}</span>`).join('')
-        : '';
-      const kwChips = (n.keywords || []).slice(0, 3).map(k => `<span class="sm-tile-chip">${PROP_META.keyword.glyph} ${esc(clip(k, 16))}</span>`).join('');
-      return `<div class="sm-tile" data-node="${esc(n.id)}" style="border-left-color:${colorFor(n.hue)}">
-        <div class="sm-tile-top">
-          <span class="sm-tile-dot" style="background:${colorFor(n.hue)}"></span>
-          <span class="sm-tile-deg">deg ${degree[n.id] || 0}</span>
-        </div>
-        <div class="sm-tile-title" title="${esc(n.title || n.label)}">${esc(clip(n.title || n.label, 90))}</div>
-        <div class="sm-tile-meta">${esc(KG.domains[n.domain].label)} › ${esc(KG.clusters[n.cluster].label)}</div>
-        <div class="sm-tile-chips">
-          ${n.authors?.[0] ? `<span class="sm-tile-chip">${PROP_META.author.glyph} ${esc(clip(n.authors[0], 18))}</span>` : ''}
-          ${n.orgName ? `<span class="sm-tile-chip">${PROP_META.org.glyph} ${esc(clip(n.orgName, 18))}</span>` : ''}
-          ${kwChips}
-        </div>
-        ${viaChips ? `<div class="sm-tile-via"><span class="sm-tile-via-k">linked via</span>${viaChips}</div>` : ''}
-      </div>`;
-    }).join('') || `<div class="sm-tiles-empty">No datasets match “${esc(q)}”.</div>`;
+      if (!viaInfo) return '';
+      return [...new Map(viaInfo.map(v => [`${v.via?.prop}:${v.via?.value}`, v.via])).values()].slice(0, 3)
+        .map(v => `<span class="sm-tile-via-chip" title="${esc(PROP_META[v?.prop]?.predicate || '')}">${PROP_META[v?.prop]?.glyph || '·'} ${esc(clip(v?.value || '', len))}</span>`).join('');
+    };
+    const emptyHTML = `<div class="sm-tiles-empty">No datasets match “${esc(q)}”.</div>`;
+
+    if (tileView === 'table') {
+      grid.classList.add('as-table');
+      // Bar reflects the active sort metric so the ranking is visible, not just sorted.
+      const metric = sortMode === 'external' ? extDeg : degree;
+      const maxMetric = Math.max(1, d3.max(shown, n => metric[n.id] || 0) || 1);
+      const pairMode = !!viaByNode;
+      const dash = '<span class="sm-td-empty">—</span>';
+      const cell = (v, full) => v ? `<span title="${esc(full ?? v)}">${esc(v)}</span>` : dash;
+
+      // One source of truth for the columns → keeps colgroup, headers, and cells aligned.
+      const cols = [
+        { key: 'deg', label: sortMode === 'external' ? 'Ext deg' : 'Total deg', w: 120, cls: 'sm-td-deg',
+          cell: n => { const mv = metric[n.id] || 0; return `<div class="sm-deg-cell" title="total deg ${degree[n.id] || 0} · external ${extDeg[n.id] || 0}"><span class="sm-deg-num">${mv}</span><span class="sm-deg-bar"><span style="width:${(mv / maxMetric * 100).toFixed(1)}%;background:${colorFor(n.hue)}"></span></span></div>`; } },
+        { key: 'title', label: 'Dataset', w: 300, cls: 'sm-td-title',
+          cell: n => `<span class="sm-tile-dot" style="background:${colorFor(n.hue)}"></span><span class="sm-td-title-txt" title="${esc(n.title || n.label)}">${esc(n.title || n.label)}</span>` },
+        { key: 'cluster', label: 'Cluster', w: 150, cls: 'sm-td-cluster',
+          cell: n => cell(KG.clusters[n.cluster].label, `${KG.domains[n.domain].label} › ${KG.clusters[n.cluster].label}`) },
+        { key: 'author', label: 'Author', w: 150, cls: '', cell: n => cell(n.authors?.[0], (n.authors || []).join(', ')) },
+        { key: 'desc', label: 'Description', w: 320, cls: 'sm-td-desc', cell: n => cell(n.description) },
+        ...(pairMode ? [{ key: 'via', label: 'Linked via', w: 180, cls: 'sm-td-via', cell: n => viaChipsFor(n, 16) || dash }] : []),
+      ];
+
+      const colgroup = cols.map(c => `<col data-col="${c.key}" style="width:${tableColW[c.key] ?? c.w}px">`).join('');
+      const thead = cols.map((c, i) =>
+        `<th class="${c.cls}">${esc(c.label)}${i < cols.length - 1 ? `<span class="sm-col-resize" data-col="${c.key}"></span>` : ''}</th>`).join('');
+      const tbody = shown.map(n =>
+        `<tr class="sm-tr" data-node="${esc(n.id)}">${cols.map(c => `<td class="${c.cls}">${c.cell(n)}</td>`).join('')}</tr>`).join('');
+
+      grid.innerHTML = shown.length
+        ? `<table class="sm-table"><colgroup>${colgroup}</colgroup><thead><tr>${thead}</tr></thead><tbody>${tbody}</tbody></table>`
+        : emptyHTML;
+
+      // Excel-like resizing — drag a header's right edge to set that column's width.
+      grid.querySelectorAll('.sm-col-resize').forEach(handle => {
+        handle.addEventListener('mousedown', ev => {
+          ev.preventDefault(); ev.stopPropagation();
+          const key = handle.dataset.col;
+          const colEl = grid.querySelector(`col[data-col="${key}"]`);
+          const startX = ev.clientX, startW = colEl.getBoundingClientRect().width;
+          handle.classList.add('dragging');
+          document.body.style.cursor = 'col-resize'; document.body.style.userSelect = 'none';
+          const onMove = e => { const w = Math.max(56, startW + (e.clientX - startX)); colEl.style.width = w + 'px'; tableColW[key] = w; };
+          const onUp = () => {
+            document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp);
+            handle.classList.remove('dragging'); document.body.style.cursor = ''; document.body.style.userSelect = '';
+          };
+          document.addEventListener('mousemove', onMove); document.addEventListener('mouseup', onUp);
+        });
+      });
+    } else {
+      grid.classList.remove('as-table');
+      grid.innerHTML = shown.map(n => {
+        const viaChips = viaChipsFor(n, 18);
+        const kwChips = (n.keywords || []).slice(0, 3).map(k => `<span class="sm-tile-chip">${PROP_META.keyword.glyph} ${esc(clip(k, 16))}</span>`).join('');
+        return `<div class="sm-tile" data-node="${esc(n.id)}" style="border-left-color:${colorFor(n.hue)}">
+          <div class="sm-tile-top">
+            <span class="sm-tile-dot" style="background:${colorFor(n.hue)}"></span>
+            <span class="sm-tile-deg">deg ${degree[n.id] || 0}</span>
+          </div>
+          <div class="sm-tile-title" title="${esc(n.title || n.label)}">${esc(clip(n.title || n.label, 90))}</div>
+          <div class="sm-tile-meta">${esc(KG.domains[n.domain].label)} › ${esc(KG.clusters[n.cluster].label)}</div>
+          <div class="sm-tile-chips">
+            ${n.authors?.[0] ? `<span class="sm-tile-chip">${PROP_META.author.glyph} ${esc(clip(n.authors[0], 18))}</span>` : ''}
+            ${n.orgName ? `<span class="sm-tile-chip">${PROP_META.org.glyph} ${esc(clip(n.orgName, 18))}</span>` : ''}
+            ${kwChips}
+          </div>
+          ${viaChips ? `<div class="sm-tile-via"><span class="sm-tile-via-k">linked via</span>${viaChips}</div>` : ''}
+        </div>`;
+      }).join('') || emptyHTML;
+    }
 
     if (list.length > cap) {
       const more = document.createElement('div');
@@ -632,7 +701,7 @@ export function renderSensemaking(container) {
       grid.appendChild(more);
     }
 
-    grid.querySelectorAll('.sm-tile').forEach(t => t.addEventListener('click', () => {
+    grid.querySelectorAll('[data-node]').forEach(t => t.addEventListener('click', () => {
       const n = nodeById[t.dataset.node]; if (!n) return;
       selectedNode = n; openEgonet(n, true);
     }));

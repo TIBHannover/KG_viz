@@ -660,6 +660,51 @@
       max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     }
 
+    /* ── Tiles ⇆ Table view toggle ── */
+    .sm-view-toggle { display: inline-flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; flex-shrink: 0; }
+    .sm-view-toggle button {
+      background: transparent; border: none; color: var(--ink-3);
+      font-family: inherit; font-size: 13px; line-height: 1; padding: 4px 9px; cursor: pointer; transition: all 0.12s;
+    }
+    .sm-view-toggle button + button { border-left: 1px solid var(--line); }
+    .sm-view-toggle button:hover { color: var(--ink-2); }
+    .sm-view-toggle button.active { background: var(--bg-3); color: var(--amber); }
+
+    /* ── Dense table view — flat, spreadsheet-like ── */
+    .sm-tiles-grid.as-table { display: block; padding: 0; }
+    .sm-table { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: 11px; }
+    .sm-table th, .sm-table td {
+      text-align: left; padding: 5px 10px; white-space: nowrap;
+      overflow: hidden; text-overflow: ellipsis;
+      border-bottom: 1px solid var(--line); border-right: 1px solid var(--line);
+    }
+    .sm-table th:last-child, .sm-table td:last-child { border-right: none; }
+    .sm-table thead th {
+      position: sticky; top: 0; z-index: 1; background: var(--bg-2);
+      font-size: 10px; font-weight: 600; color: var(--ink-2); user-select: none;
+    }
+    .sm-table td { color: var(--ink-2); }
+    .sm-table tbody tr { cursor: pointer; }
+    .sm-table tbody tr:hover td { background: var(--bg-3); }
+
+    /* drag-to-resize handle on the right edge of each header cell */
+    .sm-col-resize { position: absolute; top: 0; right: -4px; width: 8px; height: 100%; cursor: col-resize; z-index: 3; }
+    .sm-col-resize::after {
+      content: ''; position: absolute; right: 4px; top: 0; bottom: 0; width: 2px;
+      background: transparent; transition: background 0.1s;
+    }
+    .sm-col-resize:hover::after, .sm-col-resize.dragging::after { background: var(--amber); }
+
+    .sm-td-deg .sm-deg-cell { display: flex; align-items: center; gap: 7px; }
+    .sm-deg-num { font-family: "JetBrains Mono", monospace; font-size: 10px; color: var(--ink); min-width: 24px; text-align: right; flex-shrink: 0; }
+    .sm-deg-bar { flex: 1; height: 4px; min-width: 14px; background: var(--bg-3); border-radius: 2px; overflow: hidden; }
+    .sm-deg-bar > span { display: block; height: 100%; border-radius: 2px; }
+    .sm-td-title { display: flex; align-items: center; gap: 7px; color: var(--ink); }
+    .sm-td-title-txt { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .sm-table tbody tr:hover .sm-td-title-txt { color: var(--amber); }
+    .sm-td-cluster, .sm-td-desc { color: var(--ink-3); }
+    .sm-td-empty { color: var(--ink-3); opacity: 0.5; }
+
     /* ── Egonet: layered node-card graph ── */
     .ego-breadcrumb {
       position: absolute; top: 10px; left: 10px; right: 10px; z-index: 6;
