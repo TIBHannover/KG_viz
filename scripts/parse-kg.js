@@ -65,24 +65,24 @@ const SOURCES = {
 // First matching category wins per dataset. Match is case-insensitive substring.
 const TOPIC_CATEGORIES = {
   openaire: [
-    { label: 'Clean & Renewable Energy',
+    // Merged green-transition cluster: renewables + climate + sustainability/SDGs.
+    // Kept first so first-match-wins preferentially routes these datasets here.
+    { label: 'Sustainability, Climate & Renewables',
       patterns: ['clean energy', '7. clean energy', 'renewable', 'solar energy', 'wind energy',
-                 'photovoltaic', 'biomass', 'geothermal', 'bioenergy', 'clean power', 'hydropower'] },
-    { label: 'Climate & Emissions',
-      patterns: ['climate', '13. climate action', 'emission', 'carbon dioxide', 'co2',
-                 'greenhouse', 'global warming', 'decarboni', 'net zero', 'ghg'] },
-    { label: 'Sustainable Development',
-      patterns: ['11. sustainability', '12. responsible', 'sustainability', 'sustainable development',
+                 'photovoltaic', 'biomass', 'geothermal', 'bioenergy', 'clean power', 'hydropower',
+                 'climate', '13. climate action', 'emission', 'carbon dioxide', 'co2',
+                 'greenhouse', 'global warming', 'decarboni', 'net zero', 'ghg',
+                 '11. sustainability', '12. responsible', 'sustainability', 'sustainable development',
                  'circular economy', 'sdg', 'sustainable cities'] },
-    { label: 'Energy Demand & Efficiency',
+    // Demand-side + industrial/technical: how energy is used and produced more efficiently.
+    { label: 'Energy Demand, Efficiency & Industry',
       patterns: ['energy consumption', 'energy demand', 'energy efficiency', 'energy balance',
-                 'energy saving', 'energy use', 'building energy', 'energy audit'] },
+                 'energy saving', 'energy use', 'building energy', 'energy audit',
+                 '9. industry', 'industry', 'innovation', 'manufacturing', 'industrial process',
+                 'smart grid', 'digitali'] },
     { label: 'Energy Policy & Markets',
       patterns: ['energy policy', 'energy market', 'energy price', 'energy cost',
                  'policy', 'regulation', 'market', 'tariff', 'investment', 'lcoe', 'finance'] },
-    { label: 'Industry & Innovation',
-      patterns: ['9. industry', 'industry', 'innovation', 'manufacturing', 'industrial process',
-                 'smart grid', 'digitali'] },
     { label: 'Nuclear & Plasma Science',
       patterns: ['plasma', 'nuclear energy', 'nuclear power', 'fusion energy',
                  'reactor', 'burning plasma', 'tokamak', 'iter'] },

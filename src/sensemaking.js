@@ -8,6 +8,7 @@
 
 import * as d3 from 'd3';
 import { EnergyKG } from './data.js';
+import { openStoryline } from './storyline.js';
 
 function colorFor(hue, l = 0.58, c = 0.15) { return `oklch(${l} ${c} ${hue})`; }
 const esc = s => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -551,6 +552,15 @@ export function renderSensemaking(container) {
 
   function setTileFilter(f) { tileFilter = f; renderTiles(); }
 
+  // Mark the tile/row matching the current selection so the source of the open
+  // egonet stays visible. Safe to call any time; re-applied after every re-render.
+  function highlightSelected() {
+    const grid = canvasWrap.querySelector('#sm-tiles-grid');
+    if (!grid) return;
+    grid.querySelectorAll('[data-node]').forEach(el =>
+      el.classList.toggle('is-selected', !!selectedNode && el.dataset.node === selectedNode.id));
+  }
+
   // Resolve the current filter → { nodes, viaByNode, label }
   function tileSet() {
     if (tileFilter.mode === 'cluster') {
@@ -703,8 +713,9 @@ export function renderSensemaking(container) {
 
     grid.querySelectorAll('[data-node]').forEach(t => t.addEventListener('click', () => {
       const n = nodeById[t.dataset.node]; if (!n) return;
-      selectedNode = n; openEgonet(n, true);
+      openEgonet(n, true);
     }));
+    highlightSelected();
   }
 
   // ════════════════════════════════════════════════════════════
@@ -716,6 +727,8 @@ export function renderSensemaking(container) {
       if (i >= 0) egoTrail = egoTrail.slice(0, i + 1);
       else egoTrail.push(center.id);
     }
+    selectedNode = center;     // single source of truth → keeps the tile/row highlight in sync
+    highlightSelected();
     renderEgonet(center);
   }
 
@@ -789,10 +802,20 @@ export function renderSensemaking(container) {
       threecol.classList.remove('ego-open');
       document.getElementById('sm-view-label').textContent = 'CLUSTER × CLUSTER CONNECTIVITY';
       selectedNode = null; egoTrail = [];
+      highlightSelected();
       // Clear ego col content after the CSS transition finishes
       setTimeout(() => { egoCol.innerHTML = ''; egoPane = null; }, 400);
     };
     egoCol.appendChild(closeBtn);
+
+    // Launcher for the separate Storyline Trail — a context-preserving exploration
+    // trail that overlays the whole canvas (its own feature, beside the egonet).
+    const trailBtn = document.createElement('button');
+    trailBtn.className = 'st-launch';
+    trailBtn.innerHTML = '⇄ Storyline';
+    trailBtn.title = 'Explore this node as a context-preserving storyline trail';
+    trailBtn.onclick = () => openStoryline(canvasWrap, center, { KG, nodeById, degree, adjacency });
+    egoCol.appendChild(trailBtn);
 
     egoTreeRoot = { id: center.id, node: center, children: [], expanded: false, edge: null };
     expandTree(egoTreeRoot, ROOT_CAP);

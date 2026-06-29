@@ -629,6 +629,8 @@
       display: flex; flex-direction: column; gap: 6px; transition: background 0.1s, border-color 0.1s;
     }
     .sm-tile:hover { background: var(--bg-3); border-color: var(--line-2); }
+    .sm-tile.is-selected { background: var(--bg-3); border-color: var(--amber); box-shadow: 0 0 0 1px var(--amber); }
+    .sm-tile.is-selected .sm-tile-title { color: var(--amber); }
     .sm-tile-top { display: flex; align-items: center; gap: 6px; }
     .sm-tile-dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
     .sm-tile-deg {
@@ -686,6 +688,9 @@
     .sm-table td { color: var(--ink-2); }
     .sm-table tbody tr { cursor: pointer; }
     .sm-table tbody tr:hover td { background: var(--bg-3); }
+    .sm-table tbody tr.is-selected td { background: oklch(0.78 0.15 65 / 0.10); }
+    .sm-table tbody tr.is-selected td:first-child { box-shadow: inset 3px 0 0 var(--amber); }
+    .sm-table tbody tr.is-selected .sm-td-title-txt { color: var(--amber); }
 
     /* drag-to-resize handle on the right edge of each header cell */
     .sm-col-resize { position: absolute; top: 0; right: -4px; width: 8px; height: 100%; cursor: col-resize; z-index: 3; }
@@ -879,6 +884,79 @@
     }
     .ego-pop-toggle:hover { border-color: var(--amber); color: var(--amber); }
     .ego-pop-toggle.open { color: var(--amber); border-color: var(--amber); background: var(--amber-soft); }
+
+    /* ════════ Storyline Trail — launched from the Sensemaking egonet ════════ */
+    /* Launcher button (sits in the ego panel, left of the ← back button) */
+    .st-launch {
+      position: absolute; top: 8px; right: 84px; z-index: 11;
+      background: var(--bg-2); border: 1px solid var(--line); color: var(--ink-2);
+      font-family: inherit; font-size: 10px; letter-spacing: 0.04em;
+      padding: 3px 10px; border-radius: 999px; cursor: pointer; transition: all 0.12s;
+    }
+    .st-launch:hover { border-color: var(--amber); color: var(--amber); }
+
+    /* Full-canvas overlay */
+    .st-trail {
+      position: absolute; inset: 0; z-index: 30; background: var(--bg);
+      display: flex; flex-direction: column; animation: st-fade 0.18s ease;
+    }
+    @keyframes st-fade { from { opacity: 0; } to { opacity: 1; } }
+    .st-trail-head {
+      display: flex; align-items: center; gap: 10px; padding: 10px 16px;
+      border-bottom: 1px solid var(--line); background: linear-gradient(180deg, var(--bg-3), var(--bg-2));
+    }
+    .st-trail-title { font-family: "JetBrains Mono", monospace; font-size: 11px; letter-spacing: 0.14em; font-weight: 600; color: var(--amber); }
+    .st-trail-seed { font-size: 12px; color: var(--ink-2); }
+    .st-trail-hint { font-family: "JetBrains Mono", monospace; font-size: 9px; color: var(--ink-3); margin-left: auto; }
+    .st-trail-close {
+      background: transparent; border: 1px solid var(--line-2); color: var(--ink-3);
+      font-family: inherit; font-size: 10px; padding: 4px 10px; border-radius: 999px; cursor: pointer;
+    }
+    .st-trail-close:hover { border-color: var(--amber); color: var(--amber); }
+
+    /* block-cascade canvas */
+    .st-trail-canvas { flex: 1; min-height: 0; position: relative; overflow: auto; background: var(--bg); }
+    .st-canvas-inner { position: relative; min-width: 100%; min-height: 100%; }
+    .st-edges { position: absolute; top: 0; left: 0; z-index: 0; pointer-events: none; overflow: visible; }
+    .st-edge { fill: none; stroke: var(--line-2); stroke-width: 1.6; stroke-opacity: 0.85; }
+
+    /* a block: TOPIC head → connector rows */
+    .st-block {
+      position: absolute; z-index: 1; width: 452px;
+      background: var(--bg); border: 1px solid var(--line); border-radius: 11px;
+      box-shadow: var(--shadow); overflow: hidden;
+    }
+    .st-block-head { padding: 9px 13px; border-top: 3px solid var(--line-2); border-bottom: 1px solid var(--line); background: var(--bg-2); }
+    .st-block-k { font-family: "JetBrains Mono", monospace; font-size: 8.5px; letter-spacing: 0.08em; color: var(--ink-3); }
+    .st-block-t {
+      font-size: 13px; font-weight: 600; color: var(--ink); line-height: 1.25; margin-top: 3px;
+      display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+    }
+    .st-block-rows { display: flex; flex-direction: column; }
+    .st-block-empty { padding: 14px; font-size: 11px; font-style: italic; color: var(--ink-3); }
+
+    /* one connector + its scrollable dataset table */
+    .st-conn-row { display: flex; align-items: flex-start; gap: 11px; padding: 9px 13px; border-bottom: 1px solid var(--line); }
+    .st-conn-row:last-child { border-bottom: none; }
+    .st-conn {
+      flex: 0 0 138px; display: flex; flex-direction: column; gap: 2px;
+      background: var(--bg-2); border: 1px solid var(--line); border-left: 3px solid oklch(0.55 0.15 280);
+      border-radius: 7px; padding: 6px 9px;
+    }
+    .st-conn-g { font-family: "JetBrains Mono", monospace; font-size: 13px; color: oklch(0.5 0.15 280); }
+    .st-conn-v { font-size: 11px; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .st-conn-meta { font-family: "JetBrains Mono", monospace; font-size: 8px; letter-spacing: 0.04em; text-transform: uppercase; color: var(--ink-3); }
+
+    .st-conn-table { flex: 1; min-width: 0; max-height: 152px; overflow-y: auto; border: 1px solid var(--line); border-radius: 7px; background: var(--bg); }
+    .st-conn-table::-webkit-scrollbar { width: 7px; }
+    .st-conn-table::-webkit-scrollbar-thumb { background: var(--line-2); border-radius: 3px; }
+    .st-trow { display: flex; align-items: center; gap: 7px; padding: 5px 9px; border-bottom: 1px solid var(--line); cursor: pointer; transition: background 0.1s; }
+    .st-trow:last-child { border-bottom: none; }
+    .st-trow:hover { background: var(--bg-3); }
+    .st-trow:hover .st-trow-t { color: var(--amber); }
+    .st-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; display: inline-block; }
+    .st-trow-t { flex: 1; min-width: 0; font-size: 10.5px; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .st-trow-d { font-family: "JetBrains Mono", monospace; font-size: 8px; color: var(--ink-3); flex-shrink: 0; }
   </style>
 </head>
 <body>
