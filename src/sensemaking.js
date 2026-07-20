@@ -9,24 +9,7 @@
 import * as d3 from 'd3';
 import { EnergyKG } from './data.js';
 import { openStoryline } from './storyline.js';
-
-function colorFor(hue, l = 0.58, c = 0.15) { return `oklch(${l} ${c} ${hue})`; }
-const esc = s => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-const clip = (s, n) => (s && s.length > n ? s.slice(0, n - 1) + '…' : (s || ''));
-const viaKey = v => v ? `${v.prop} ${v.value}` : '∅';
-
-// Stable group-by: keep input (degree) order of groups by first appearance,
-// but make all members sharing a via value contiguous. Used so bundled edges
-// fan out from an adjacent block of children instead of scattered rows.
-function groupByVia(list) {
-  const order = [], groups = new Map();
-  for (const e of list) {
-    const k = viaKey(e.via);
-    if (!groups.has(k)) { groups.set(k, []); order.push(k); }
-    groups.get(k).push(e);
-  }
-  return order.flatMap(k => groups.get(k));
-}
+import { colorFor, esc, clip, viaKey, groupByVia, acronymOf } from './helpers.js';
 
 const PROP_META = {
   author:  { label: 'Author',       glyph: '✎', predicate: 'dct:creator → pro:Author' },
@@ -45,9 +28,13 @@ const KIND_META = {
   cross:   { label: 'Cross-domain',   desc: 'different domain', color: 'oklch(0.55 0.18 320)', hex: '#a23bb5' },
 };
 
-export function renderSensemaking(container) {
+export function renderSensemaking(container, options = {}) {
   container.innerHTML = '';
   const KG = EnergyKG;
+  const title = options.title || 'Sensemaking Explorer';
+  // Storytelling mode: selecting a dataset opens the Storyline trail directly
+  // instead of the Egonet tree (see src/storytelling.js).
+  const directStoryline = !!options.directStoryline;
 
   // ── Node lookup + degrees
   const nodeById = {};
@@ -90,6 +77,26 @@ export function renderSensemaking(container) {
       return di !== dj ? di - dj : b.leafCount - a.leafCount;
     });
 
+  // Unique acronym per cluster — shared by the matrix labels, bundle ring, and both legends.
+  const clusterAcro = {};
+  { const used = new Map();
+    clusterList.forEach(c => {
+      let a = acronymOf(c.label);
+      if (used.has(a)) { const n = used.get(a) + 1; used.set(a, n); a += n; } else used.set(a, 1);
+      clusterAcro[c.id] = a;
+    }); }
+  // The acronym → full-name key, shown in a corner of the matrix / bundle.
+  function acroLegend(side) {
+    const el = document.createElement('div');
+    el.className = 'sm-acro-legend' + (side === 'right' ? ' sm-acro-right' : side === 'below' ? ' sm-acro-below' : '');
+    el.innerHTML = `<div class="sm-acro-head">CLUSTER KEY</div>` + clusterList.map(c =>
+      `<div class="sm-acro-row">
+        <span class="sm-acro-tag" style="color:${colorFor(c.hue, 0.45, 0.15)};border-color:${colorFor(c.hue, 0.62, 0.12)}">${esc(clusterAcro[c.id])}</span>
+        <span class="sm-acro-name">${esc(c.label)}</span>
+      </div>`).join('');
+    return el;
+  }
+
   // ── Cluster×cluster connectivity + intra counts
   const matrixData = {}, intraCount = {};
   clusterList.forEach(c => (matrixData[c.id] = {}));
@@ -109,11 +116,11 @@ export function renderSensemaking(container) {
   const toolbar = document.createElement('div');
   toolbar.className = 'breadcrumb-bar';
   toolbar.style.gap = '8px';
-  toolbar.innerHTML = `
-    <span style="font-weight:600;font-size:13px;color:var(--ink);">Sensemaking Explorer</span>
-    <span class="crumb-sep">·</span>
-    <span id="sm-view-label" style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--ink-3);letter-spacing:0.14em;">CLUSTER × CLUSTER CONNECTIVITY</span>
-  `;
+  toolbar.innerHTML = directStoryline
+    ? `<button id="st-lens-btn" class="st-lens-btn" title="Structure the dataset list by cluster connectivity">◫ Filterix</button>`
+    : `<span style="font-weight:600;font-size:13px;color:var(--ink);">${esc(title)}</span>
+       <span class="crumb-sep">·</span>
+       <span id="sm-view-label" style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--ink-3);letter-spacing:0.14em;">CLUSTER × CLUSTER CONNECTIVITY</span>`;
   main.appendChild(toolbar);
   const canvasWrap = document.createElement('div');
   canvasWrap.className = 'canvas-wrap';
@@ -126,7 +133,11 @@ export function renderSensemaking(container) {
   let selectedNode = null;
   let sortMode = 'degree';
   let matrixSvg = null;
+  let mxRefresh = null;                    // matrix: re-applies the crosshair for the current selection
+  let matrixDisplayW = null;               // matrix: user-dragged display width (px); null = auto-fit column
+  let storyCloseLens = null;               // storytelling: closes the Filterix overlay (set in renderStoryLayout)
   let matrixHighlightCluster = null;
+  let matrixLink = null;                   // matrix only: a selected connection { a, b }
   let matrixMode = 'matrix';              // 'matrix' | 'chord' | 'bundle'
   let chordSvg = null, chordClusters = [];
   let bundleSvg = null, bundleLeaves = {};
@@ -147,71 +158,70 @@ export function renderSensemaking(container) {
     </div>`;
   }
 
-  function renderMatrix() {
-    canvasWrap.innerHTML = '';
-    const threecol = document.createElement('div');
-    threecol.className = 'sm-three-col';
-    threecol.innerHTML = `
-      <div class="sm-col-matrix">
-        <div class="sm-matrix-toolbar">
-          <div class="sm-mode-toggle">
-            <button data-mode="matrix" class="${matrixMode === 'matrix' ? 'active' : ''}">▦ Matrix</button>
-            <button data-mode="chord" class="${matrixMode === 'chord' ? 'active' : ''}">◍ Chord</button>
-            <button data-mode="bundle" class="${matrixMode === 'bundle' ? 'active' : ''}">❀ Bundle</button>
+  // ── Shared markup + wiring, reused by the Sensemaking three-column layout and
+  //    the Storytelling split layout (tiles left · storyline right + lens overlay).
+  function matrixColMarkup() {
+    return `
+      <div class="sm-matrix-toolbar">
+        <div class="sm-mode-toggle">
+          <button data-mode="matrix" class="${matrixMode === 'matrix' ? 'active' : ''}">▦ Matrix</button>
+          <button data-mode="chord" class="${matrixMode === 'chord' ? 'active' : ''}">◍ Chord</button>
+          <button data-mode="bundle" class="${matrixMode === 'bundle' ? 'active' : ''}">❀ Bundle</button>
+        </div>
+      </div>
+      ${kindLegendHTML()}
+      <div class="sm-matrix-scroll"></div>`;
+  }
+  function tilesColMarkup() {
+    return `
+      <div class="sm-tiles-head">
+        <div class="sm-tiles-row">
+          <input id="sm-search" autocomplete="off" placeholder="Search datasets — title · keyword · author…">
+          <button class="sm-sort-btn active" data-sort="degree">Total deg</button>
+          <button class="sm-sort-btn" data-sort="external">External</button>
+          <div class="sm-view-toggle">
+            <button data-view="tiles" class="${tileView === 'tiles' ? 'active' : ''}" title="Card grid — best for small result sets">▦</button>
+            <button data-view="table" class="${tileView === 'table' ? 'active' : ''}" title="Dense table — best for ranking &amp; comparison">≣</button>
           </div>
         </div>
-        ${kindLegendHTML()}
-        <div class="sm-matrix-scroll"></div>
-      </div>
-      <div class="sm-col-tiles">
-        <div class="sm-tiles-head">
-          <div class="sm-tiles-row">
-            <input id="sm-search" autocomplete="off" placeholder="Search datasets — title · keyword · author…">
-            <button class="sm-sort-btn active" data-sort="degree">Total deg</button>
-            <button class="sm-sort-btn" data-sort="external">External</button>
-            <div class="sm-view-toggle">
-              <button data-view="tiles" class="${tileView === 'tiles' ? 'active' : ''}" title="Card grid — best for small result sets">▦</button>
-              <button data-view="table" class="${tileView === 'table' ? 'active' : ''}" title="Dense table — best for ranking &amp; comparison">≣</button>
-            </div>
-          </div>
-          <div class="sm-tiles-row sm-facet-row" id="sm-facet-row">
-            <span class="sm-facet-label">Linked via</span>
-            ${LINK_PROPS.map(([prop, m]) =>
-              `<button class="sm-facet-chip${relFacet.has(prop) ? ' active' : ''}" data-prop="${prop}" title="${esc(m.predicate)}">
-                 <span class="sm-facet-glyph">${m.glyph}</span>${m.label}</button>`).join('')}
-            <button class="sm-facet-clear" id="sm-facet-clear" style="${relFacet.size ? '' : 'display:none'}">reset</button>
-          </div>
-          <div class="sm-tiles-context" id="sm-tiles-context"></div>
+        <div class="sm-tiles-row sm-facet-row" id="sm-facet-row">
+          <span class="sm-facet-label">Linked via</span>
+          ${LINK_PROPS.map(([prop, m]) =>
+            `<button class="sm-facet-chip${relFacet.has(prop) ? ' active' : ''}" data-prop="${prop}" title="${esc(m.predicate)}">
+               <span class="sm-facet-glyph">${m.glyph}</span>${m.label}</button>`).join('')}
+          <button class="sm-facet-clear" id="sm-facet-clear" style="${relFacet.size ? '' : 'display:none'}">reset</button>
         </div>
-        <div class="sm-tiles-grid" id="sm-tiles-grid"></div>
+        <div class="sm-tiles-context" id="sm-tiles-context"></div>
       </div>
-      <div class="sm-col-ego"></div>`;
-    canvasWrap.appendChild(threecol);
-
-    const scroll = threecol.querySelector('.sm-matrix-scroll');
+      <div class="sm-tiles-grid" id="sm-tiles-grid"></div>`;
+  }
+  // Wire the matrix/chord/bundle mode toggle within `scope` and draw the active one.
+  function wireMatrixControls(scope) {
+    const scroll = scope.querySelector('.sm-matrix-scroll');
     drawActiveLeft(scroll);
-
-    threecol.querySelectorAll('.sm-mode-toggle button').forEach(b => b.addEventListener('click', () => {
+    scope.querySelectorAll('.sm-mode-toggle button').forEach(b => b.addEventListener('click', () => {
       matrixMode = b.dataset.mode;
-      threecol.querySelectorAll('.sm-mode-toggle button').forEach(x => x.classList.toggle('active', x.dataset.mode === matrixMode));
+      scope.querySelectorAll('.sm-mode-toggle button').forEach(x => x.classList.toggle('active', x.dataset.mode === matrixMode));
       drawActiveLeft(scroll);
     }));
-
-    const search = threecol.querySelector('#sm-search');
+    return scroll;
+  }
+  // Wire the tiles head (search · sort · view toggle · facets) within `scope`.
+  function wireTilesControls(scope) {
+    const search = scope.querySelector('#sm-search');
     search.addEventListener('input', () => renderTiles());
-    threecol.querySelectorAll('.sm-sort-btn').forEach(b => b.addEventListener('click', () => {
+    scope.querySelectorAll('.sm-sort-btn').forEach(b => b.addEventListener('click', () => {
       sortMode = b.dataset.sort;
-      threecol.querySelectorAll('.sm-sort-btn').forEach(x => x.classList.toggle('active', x.dataset.sort === sortMode));
+      scope.querySelectorAll('.sm-sort-btn').forEach(x => x.classList.toggle('active', x.dataset.sort === sortMode));
       renderTiles();
     }));
-    threecol.querySelectorAll('.sm-view-toggle button').forEach(b => b.addEventListener('click', () => {
+    scope.querySelectorAll('.sm-view-toggle button').forEach(b => b.addEventListener('click', () => {
       tileView = b.dataset.view;
-      threecol.querySelectorAll('.sm-view-toggle button').forEach(x => x.classList.toggle('active', x.dataset.view === tileView));
+      scope.querySelectorAll('.sm-view-toggle button').forEach(x => x.classList.toggle('active', x.dataset.view === tileView));
       renderTiles();
     }));
-
-    const facetRow = threecol.querySelector('#sm-facet-row');
-    const facetClear = threecol.querySelector('#sm-facet-clear');
+    const facetRow = scope.querySelector('#sm-facet-row');
+    const facetClear = scope.querySelector('#sm-facet-clear');
     function syncFacetChips() {
       facetRow.querySelectorAll('.sm-facet-chip').forEach(x => x.classList.toggle('active', relFacet.has(x.dataset.prop)));
       facetClear.style.display = relFacet.size ? '' : 'none';
@@ -223,7 +233,73 @@ export function renderSensemaking(container) {
       renderTiles();
     }));
     facetClear.addEventListener('click', () => { relFacet.clear(); syncFacetChips(); renderTiles(); });
+  }
 
+  // Sensemaking layout — matrix | tiles | egonet.
+  function renderMatrix() {
+    canvasWrap.innerHTML = '';
+    const threecol = document.createElement('div');
+    threecol.className = 'sm-three-col';
+    threecol.innerHTML = `
+      <div class="sm-col-matrix">${matrixColMarkup()}</div>
+      <div class="sm-col-tiles">${tilesColMarkup()}</div>
+      <div class="sm-col-ego"></div>`;
+    canvasWrap.appendChild(threecol);
+    wireMatrixControls(threecol.querySelector('.sm-col-matrix'));
+    wireTilesControls(threecol);
+    renderTiles();
+  }
+
+  // Storytelling layout — tiles/table on the LEFT, storyline canvas on the RIGHT.
+  // "Filterix" (the matrix/chord/bundle lens) is not inline; it opens as an overlay
+  // OVER THE RIGHT CANVAS ONLY and is used to STRUCTURE the left-hand list: clicking
+  // a cluster or a connection filters the datasets live (the list is visible beside
+  // the overlay). Click again / click empty space to deselect; ✕ to close.
+  function canvasPromptHTML() {
+    return `<div class="st-canvas-empty">
+      <div class="st-canvas-empty-mk">◇</div>
+      <div class="st-canvas-empty-t">Select a dataset to build its storyline</div>
+      <div class="st-canvas-empty-s">Pick a dataset from the list on the left. Use <b>◫ Filterix</b> to structure that list by cluster connectivity first.</div>
+    </div>`;
+  }
+  function renderStoryLayout() {
+    canvasWrap.innerHTML = '';
+    const split = document.createElement('div');
+    split.className = 'st-split';
+    split.innerHTML = `
+      <div class="sm-col-tiles st-left">${tilesColMarkup()}</div>
+      <div class="st-canvas st-right">${canvasPromptHTML()}</div>`;
+    canvasWrap.appendChild(split);
+    const canvas = split.querySelector('.st-canvas');
+
+    // Filterix overlay — hidden until the toolbar button is pressed. Mounted on the
+    // right canvas so it only covers that pane, leaving the tile list interactive.
+    const mo = document.createElement('div');
+    mo.className = 'st-matrix-overlay';
+    mo.style.display = 'none';
+    mo.innerHTML = `
+      <div class="st-mo-head">
+        <span class="st-mo-title">◫ FILTERIX</span>
+        <span class="st-mo-hint">click a cluster / connection to structure the list · click again or empty space to clear</span>
+        <button class="st-mo-close" title="Close Filterix">✕ close</button>
+      </div>
+      <div class="sm-col-matrix">${matrixColMarkup()}</div>`;
+    canvas.appendChild(mo);
+
+    let matrixWired = false;
+    const openLens = () => {
+      mo.style.display = 'flex';
+      // Draw only once the overlay is visible — the matrix sizes to its container.
+      if (!matrixWired) { wireMatrixControls(mo.querySelector('.sm-col-matrix')); matrixWired = true; }
+      else drawActiveLeft(mo.querySelector('.sm-matrix-scroll'));
+    };
+    const closeLens = () => { mo.style.display = 'none'; };
+    storyCloseLens = closeLens;   // so selecting a dataset can auto-close Filterix
+    mo.querySelector('.st-mo-close').onclick = closeLens;
+    const lensBtn = main.querySelector('#st-lens-btn');
+    if (lensBtn) lensBtn.onclick = () => (mo.style.display === 'none' ? openLens() : closeLens());
+
+    wireTilesControls(split);
     renderTiles();
   }
 
@@ -236,115 +312,199 @@ export function renderSensemaking(container) {
   function applyLeftHighlight(id) {
     if (matrixMode === 'chord') applyChordHighlight(id);
     else if (matrixMode === 'bundle') applyBundleHighlight(id);
-    else applyMatrixHighlight(id);
+    else { if (id == null) matrixLink = null; applyMatrixHighlight(); }
   }
 
   function drawMatrix(host) {
     host.innerHTML = '';
     const { width: PW = 540, height: PH = 600 } = host.getBoundingClientRect();
     const n = clusterList.length;
-    // Labels now sit on the diagonal and run rightward, so the runway lives in the
-    // right margin (mr); the left margin only holds the domain colour bar.
-    const ml = 22, mt = 10, mr = 204, mb = 14;
-    const fit = Math.min((PW - ml - mr) / n, (PH - mt - mb) / n);
-    const cellSize = Math.max(16, Math.min(50, fit));
+    // No top margin — the matrix sits flush at the top; a single domain colour bar runs
+    // down the left edge (bracketing each domain's run of rows).
+    const ml = 12, mt = 2, mr = 8, mb = 8;
+    // Size to the column WIDTH (fills it, bolder cells) and let it scroll vertically.
+    const cellSize = Math.max(20, Math.min(52, (PW - ml - mr) / n));
     const W = ml + n * cellSize + mr, H = mt + n * cellSize + mb;
 
-    // Centre horizontally but pin to the top (bottom margin auto absorbs the slack),
-    // so the matrix sits high in its scroll pane rather than floating mid-height.
     matrixSvg = d3.select(host).append('svg').attr('width', W).attr('height', H)
-      .attr('viewBox', `0 0 ${W} ${H}`).style('display', 'block').style('margin', '6px auto auto auto');
+      .attr('viewBox', `0 0 ${W} ${H}`).style('display', 'block').style('margin', '0 auto auto 0');
+    // Apply any user-chosen size (drag-to-resize); the viewBox scales all content to fit.
+    if (matrixDisplayW) matrixSvg.style('width', matrixDisplayW + 'px').style('height', (matrixDisplayW * H / W) + 'px');
 
     const maxW = Math.max(1, d3.max(clusterList.flatMap(a => clusterList.map(b => matrixData[a.id]?.[b.id] || 0))));
-    // light heatmap: empty ≈ white, strong = saturated amber
-    const colorScale = v => { const t = Math.sqrt(v / maxW); return `oklch(${0.97 - t * 0.42} ${0.02 + t * 0.16} 65)`; };
     const g = matrixSvg.append('g').attr('transform', `translate(${ml},${mt})`);
 
-    // Domain grouping is shown by a single colour bar down the left edge (it
-    // brackets each domain's run of rows along the diagonal). The matrix is
-    // symmetric, so a top bar would just mirror this — it's dropped. Domain names
-    // live in the bar's hover tooltip; cluster names are the diagonal labels.
+    // Domain colour bar down the left edge, bracketing each domain's run of rows.
     const breaks = []; let last = null;
     clusterList.forEach((c, i) => { if (c.domain !== last) { breaks.push({ domain: c.domain, start: i }); last = c.domain; } });
     breaks.forEach((dk, di) => {
       const next = di + 1 < breaks.length ? breaks[di + 1].start : n;
-      const span = (next - dk.start) * cellSize, y0 = dk.start * cellSize;
+      const span = (next - dk.start) * cellSize, p0 = dk.start * cellSize;
       const dh = KG.domains[dk.domain].hue, col = colorFor(dh, 0.6, 0.14);
       const dlabel = `${KG.domains[dk.domain].label} · ${next - dk.start} cluster${next - dk.start === 1 ? '' : 's'}`;
-      g.append('rect').attr('x', -10).attr('y', y0).attr('width', 6).attr('height', span).attr('fill', col).attr('rx', 2)
+      g.append('rect').attr('x', -8).attr('y', p0 + 1).attr('width', 4).attr('height', span - 2).attr('fill', col).attr('rx', 2)
         .append('title').text(dlabel);
     });
 
-    // Matrix is symmetric → render only the lower triangle + diagonal (ri ≥ ci);
-    // the upper triangle is redundant.
+    // Lower triangle + diagonal (symmetric matrix — upper triangle is redundant).
     const cells = [];
     clusterList.forEach((rowC, ri) => clusterList.forEach((colC, ci) => {
       if (ci > ri) return;
       cells.push({ rowC, colC, ri, ci, w: matrixData[rowC.id]?.[colC.id] || 0, diag: rowC.id === colC.id });
     }));
+    const compact = v => v >= 1000 ? (v / 1000).toFixed(v >= 10000 ? 0 : 1).replace(/\.0$/, '') + 'k' : String(v);
+    const fitFont = (text, avail, max) => Math.max(6, Math.min(max, avail / (String(text).length * 0.62)));
+
+    // ── Wired matrix (white): the diagonal holds the cluster COMPONENTS (chips); each
+    //    link is a thin trace with a distinct PIN on each component's edge, routed along
+    //    the row and up the column, bending at a via that carries the link count. Pins are
+    //    spread along each edge so a component sprouts many separate legs (detail), and
+    //    every trace terminates on its two components — no row/column ambiguity.
+    // ── Heatmap: off-diagonal tiles coloured by link count (faint → rich teal); the
+    //    diagonal holds the cluster component chips. Selecting a tile draws GUIDE LINES
+    //    from it to its two diagonal chips — the only time grid lines appear, so they
+    //    unambiguously trace the one chosen connection.
+    const gap = Math.max(1.6, cellSize * 0.13);
+    const rad = Math.min(4, cellSize * 0.22);
+    const inner = cellSize - gap;
+    const heat = v => {
+      if (v <= 0) return 'oklch(0.975 0.004 200)';
+      const t = Math.sqrt(v / maxW);
+      return `oklch(${(0.94 - t * 0.52).toFixed(3)} ${(0.03 + t * 0.13).toFixed(3)} 195)`;
+    };
+    const darkTile = v => Math.sqrt(v / maxW) > 0.46;
+
     const cellG = g.selectAll('g.sm-cell').data(cells).enter().append('g')
-      .attr('class', 'sm-cell').attr('transform', d => `translate(${d.ci * cellSize},${d.ri * cellSize})`);
-    cellG.append('rect').attr('width', cellSize - 1).attr('height', cellSize - 1).attr('rx', 1)
-      .attr('fill', d => d.diag ? colorFor(d.rowC.hue, 0.92, 0.07) : (d.w > 0 ? colorScale(d.w) : 'var(--bg-2)'))
-      .attr('stroke', 'var(--line)').attr('stroke-width', 0.5)
+      .attr('class', 'sm-cell').attr('transform', d => `translate(${d.ci * cellSize},${d.ri * cellSize})`)
       .style('cursor', d => (d.w > 0 || d.diag) ? 'pointer' : 'default');
-    // Domain-coloured left edge on each diagonal cell → the staircase reads as a
-    // clear spine and the labels feel attached to it.
-    cellG.filter(d => d.diag).append('rect')
-      .attr('width', 3).attr('height', cellSize - 1).attr('rx', 1)
-      .attr('fill', d => colorFor(d.rowC.hue, 0.58, 0.15)).attr('pointer-events', 'none');
+
+    cellG.append('rect')
+      .attr('class', d => d.diag ? 'sm-mx-node' : (d.w > 0 ? 'sm-mx-tile' : 'sm-mx-tile sm-mx-empty'))
+      .attr('x', gap / 2).attr('y', gap / 2).attr('width', inner).attr('height', inner).attr('rx', rad)
+      .attr('fill', d => d.diag ? colorFor(d.rowC.hue, 0.94, 0.05) : heat(d.w))
+      .attr('stroke', d => d.diag ? colorFor(d.rowC.hue, 0.55, 0.15) : null);
+
+    const diag = cellG.filter(d => d.diag);
+    const conn = cellG.filter(d => !d.diag && d.w > 0);
+
     cellG.filter(d => d.diag || d.w > 0).append('title').text(d => d.diag
-      ? `${d.rowC.label} · ${d.rowC.leafCount.toLocaleString()} datasets`
+      ? `${d.rowC.label} (${clusterAcro[d.rowC.id]}) · ${d.rowC.leafCount.toLocaleString()} datasets`
       : `${d.rowC.label} ↔ ${d.colC.label} · ${d.w.toLocaleString()} link${d.w === 1 ? '' : 's'}`);
-    if (cellSize >= 17) {
-      const compact = n => n >= 1000 ? (n / 1000).toFixed(n >= 10000 ? 0 : 1).replace(/\.0$/, '') + 'k' : String(n);
-      // Centre every count and shrink the font so wide values stay enclosed
-      // (JetBrains Mono advance ≈ 0.6em; 0.62 leaves a hair of side padding).
-      const SPINE = 3;
-      const fitFont = (text, avail, max) => Math.max(6, Math.min(max, avail / (text.length * 0.62)));
-      // Diagonal: centred in the area right of the domain spine.
-      cellG.filter(d => d.diag).append('text')
-        .attr('x', (SPINE + cellSize) / 2).attr('y', cellSize / 2).attr('dy', '0.32em')
-        .attr('text-anchor', 'middle').attr('font-family', "'JetBrains Mono',monospace")
-        .attr('font-size', d => fitFont(compact(d.rowC.leafCount), cellSize - SPINE - 5, cellSize * 0.42))
-        .attr('fill', d => colorFor(d.rowC.hue, 0.42, 0.15))
-        .attr('pointer-events', 'none').text(d => compact(d.rowC.leafCount));
-      // Off-diagonal: centred in the full cell.
-      cellG.filter(d => !d.diag && d.w >= Math.max(3, maxW * 0.02)).append('text')
-        .attr('x', cellSize / 2).attr('y', cellSize / 2).attr('dy', '0.32em')
-        .attr('text-anchor', 'middle').attr('font-family', "'JetBrains Mono',monospace")
-        .attr('font-size', d => fitFont(compact(d.w), cellSize - 5, cellSize * 0.36))
-        .attr('fill', 'oklch(0.25 0.03 65)')
-        .attr('pointer-events', 'none').text(d => compact(d.w));
+
+    if (cellSize >= 20) {
+      diag.append('text').attr('class', 'sm-mx-acro').attr('pointer-events', 'none')
+        .attr('x', cellSize / 2).attr('y', cellSize * 0.36).attr('dy', '0.32em').attr('text-anchor', 'middle')
+        .attr('font-size', d => fitFont(clusterAcro[d.rowC.id], cellSize - 4, cellSize * 0.28))
+        .attr('fill', d => colorFor(d.rowC.hue, 0.42, 0.15)).text(d => clusterAcro[d.rowC.id]);
+      diag.append('text').attr('class', 'sm-mx-count').attr('pointer-events', 'none')
+        .attr('x', cellSize / 2).attr('y', cellSize * 0.68).attr('dy', '0.32em').attr('text-anchor', 'middle')
+        .attr('font-size', d => fitFont(compact(d.rowC.leafCount), cellSize - 5, cellSize * 0.3))
+        .attr('fill', 'var(--ink)').text(d => compact(d.rowC.leafCount));
     }
-    cellG.on('click', (ev, d) => {
-      if (d.diag) { matrixHighlightCluster = d.rowC.id; applyMatrixHighlight(d.rowC.id); setTileFilter({ mode: 'cluster', id: d.rowC.id }); }
-      else if (d.w > 0) { matrixHighlightCluster = null; applyMatrixHighlight(null); setTileFilter({ mode: 'pair', a: d.rowC.id, b: d.colC.id }); }
-    });
+    if (cellSize >= 16) {
+      conn.append('text').attr('class', 'sm-mx-val').attr('pointer-events', 'none')
+        .attr('x', cellSize / 2).attr('y', cellSize / 2).attr('dy', '0.32em').attr('text-anchor', 'middle')
+        .attr('font-size', d => fitFont(compact(d.w), inner - 3, cellSize * 0.33))
+        .attr('fill', d => darkTile(d.w) ? '#fff' : 'var(--ink-2)').text(d => compact(d.w));
+    }
 
-    // One label per cluster, anchored just right of its diagonal cell and running
-    // into the (now empty) upper-right region. It identifies both the row and the
-    // column for that cluster, so no separate row/column label sets are needed.
-    const lblFont = Math.max(8, Math.min(cellSize * 0.5, 12));
-    const diagLbl = g.selectAll('text.sm-diag-lbl').data(clusterList).enter().append('text').attr('class', 'sm-diag-lbl')
-      .attr('x', (d, i) => (i + 1) * cellSize + 8).attr('y', (d, i) => i * cellSize + cellSize / 2)
-      .attr('dy', '0.32em').attr('text-anchor', 'start')
-      .attr('font-size', lblFont).attr('fill', d => colorFor(d.hue, 0.46, 0.14))
-      .style('cursor', 'pointer').text(d => clip(d.label, 30))
-      .on('click', (ev, d) => { matrixHighlightCluster = d.id; applyMatrixHighlight(d.id); setTileFilter({ mode: 'cluster', id: d.id }); });
-    diagLbl.append('title').text(d => `${d.label} · ${d.leafCount.toLocaleString()} datasets`);
+    // Guide-line layer (on top) — populated only for the selected connection: two lines
+    // from the cell to its two diagonal chips, with PIN markers at both chip ends + the cell.
+    const guideG = g.append('g').attr('class', 'sm-mx-guide').attr('pointer-events', 'none');
+    function drawGuides(sel) {
+      guideG.selectAll('*').remove();
+      if (!sel || sel.diag) return;
+      const cx = sel.ci * cellSize + cellSize / 2, cy = sel.ri * cellSize + cellSize / 2;
+      const rowX = sel.ri * cellSize, colY = (sel.ci + 1) * cellSize;   // row-chip left edge · column-chip bottom edge
+      guideG.append('line').attr('class', 'sm-guide').attr('x1', cx).attr('y1', cy).attr('x2', rowX).attr('y2', cy);
+      guideG.append('line').attr('class', 'sm-guide').attr('x1', cx).attr('y1', cy).attr('x2', cx).attr('y2', colY);
+      const pr = Math.max(2.4, cellSize * 0.11);
+      guideG.append('circle').attr('class', 'sm-guide-dot').attr('cx', cx).attr('cy', cy).attr('r', pr);
+      guideG.append('circle').attr('class', 'sm-guide-pin').attr('cx', rowX).attr('cy', cy).attr('r', pr * 0.72);
+      guideG.append('circle').attr('class', 'sm-guide-pin').attr('cx', cx).attr('cy', colY).attr('r', pr * 0.72);
+    }
 
-    if (matrixHighlightCluster) applyMatrixHighlight(matrixHighlightCluster);
+    // ── Highlight: a tile + its two component chips. Guide lines / pins / dimming appear
+    //    on SELECT only.
+    function chipGlow(d) {
+      const ids = !d ? [] : d.diag ? [d.rowC.id] : [d.rowC.id, d.colC.id];
+      cellG.each(function (x) { d3.select(this).select('.sm-mx-node').classed('mx-lit', ids.includes(x.rowC.id)); });
+    }
+    function currentSelCell() {
+      if (matrixLink) return cells.find(c => !c.diag && ((c.rowC.id === matrixLink.a && c.colC.id === matrixLink.b) || (c.rowC.id === matrixLink.b && c.colC.id === matrixLink.a)));
+      if (matrixHighlightCluster) return cells.find(c => c.diag && c.rowC.id === matrixHighlightCluster);
+      return null;
+    }
+    mxRefresh = () => {
+      const selD = currentSelCell();
+      // Cells to keep bright = the selected cell + the two diagonal chips of the connection.
+      let keep = null;
+      if (selD && !selD.diag) {
+        keep = new Set([selD,
+          cells.find(c => c.diag && c.rowC.id === selD.rowC.id),
+          cells.find(c => c.diag && c.rowC.id === selD.colC.id)]);
+      } else if (selD && selD.diag) {
+        keep = new Set([selD]);
+      }
+      cellG.each(function (x) {
+        d3.select(this).select('rect').classed('cell-sel', x === selD);
+        d3.select(this).attr('opacity', keep ? (keep.has(x) ? 1 : 0.14) : 1);   // dim the unrelated cells
+      });
+      drawGuides(selD);
+      chipGlow(selD);
+    };
+
+    const clearSelection = () => {
+      if (!matrixHighlightCluster && !matrixLink) return;
+      matrixHighlightCluster = null; matrixLink = null; applyMatrixHighlight(); setTileFilter({ mode: 'all' });
+    };
+    cellG.on('mouseenter', (ev, d) => { if (d.diag || d.w > 0) chipGlow(d); })
+      .on('mouseleave', () => chipGlow(currentSelCell()))
+      .on('click', (ev, d) => {
+        if (!(d.diag || d.w > 0)) return;
+        ev.stopPropagation();
+        if (d.diag) {
+          if (matrixHighlightCluster === d.rowC.id) { clearSelection(); return; }
+          matrixHighlightCluster = d.rowC.id; matrixLink = null; applyMatrixHighlight(); setTileFilter({ mode: 'cluster', id: d.rowC.id });
+        } else {
+          const same = matrixLink && ((matrixLink.a === d.rowC.id && matrixLink.b === d.colC.id) || (matrixLink.a === d.colC.id && matrixLink.b === d.rowC.id));
+          if (same) { clearSelection(); return; }
+          matrixHighlightCluster = null; matrixLink = { a: d.rowC.id, b: d.colC.id }; applyMatrixHighlight(); setTileFilter({ mode: 'pair', a: d.rowC.id, b: d.colC.id });
+        }
+      });
+    // Clicking empty space clears the current selection.
+    matrixSvg.on('click', clearSelection);
+
+    host.style.position = 'relative';
+    host.appendChild(acroLegend('right'));
+
+    // ── Resize grip: drag the bottom-right corner to resize the matrix (crop-style);
+    //    double-click to reset to the auto fit. Lives in viewBox space so it rides the corner.
+    const gs = 16;
+    const grip = matrixSvg.append('g').attr('class', 'sm-mx-resize').style('cursor', 'nwse-resize')
+      .attr('transform', `translate(${W - gs},${H - gs})`);
+    grip.append('rect').attr('width', gs).attr('height', gs).attr('fill', 'transparent');
+    grip.append('path').attr('class', 'sm-mx-resize-grip')
+      .attr('d', `M${gs - 3},4 L4,${gs - 3} M${gs - 3},9 L9,${gs - 3} M${gs - 3},14 L14,${gs - 3}`);
+    grip.on('click', ev => ev.stopPropagation())
+      .on('dblclick', ev => {
+        ev.stopPropagation();
+        matrixDisplayW = null;
+        matrixSvg.style('width', W + 'px').style('height', H + 'px');
+      });
+    grip.call(d3.drag()
+      .on('drag', ev => {
+        const r = matrixSvg.node().getBoundingClientRect();
+        const w = Math.max(160, Math.min(1600, ev.sourceEvent.clientX - r.left + gs));
+        matrixDisplayW = w;
+        matrixSvg.style('width', w + 'px').style('height', (w * H / W) + 'px');
+      }));
+
+    if (matrixHighlightCluster || matrixLink) applyMatrixHighlight();
   }
 
-  function applyMatrixHighlight(clusterId) {
-    if (!matrixSvg) return;
-    matrixSvg.selectAll('g.sm-cell').select('rect').attr('opacity', function () {
-      const d = d3.select(this.parentNode).datum();
-      if (!d || !clusterId) return 1;
-      return (d.rowC.id === clusterId || d.colC.id === clusterId) ? 1 : 0.18;
-    });
-  }
+  // The matrix highlight is entirely the crosshair for the current selection.
+  function applyMatrixHighlight() { if (mxRefresh) mxRefresh(); }
 
   // ── Chord diagram: same cluster×cluster data as the matrix, friendlier idiom.
   //    Arcs = clusters (grouped/coloured by domain) · ribbons = connection counts.
@@ -395,7 +555,7 @@ export function renderSensemaking(container) {
       .on('mouseout', () => tip.style('opacity', 0))
       .on('click', (ev, d) => {
         const a = chordClusters[d.source.index], b = chordClusters[d.target.index];
-        matrixHighlightCluster = null; applyChordHighlight(null); setTileFilter({ mode: 'pair', a: a.id, b: b.id });
+        matrixHighlightCluster = null; matrixLink = null; applyChordHighlight(null); setTileFilter({ mode: 'pair', a: a.id, b: b.id });
       });
 
     // arcs (clusters)
@@ -509,7 +669,7 @@ export function renderSensemaking(container) {
       })
       .on('mousemove', ev => tip.style('left', (ev.offsetX + 14) + 'px').style('top', (ev.offsetY - 10) + 'px'))
       .on('mouseout', function () { tip.style('opacity', 0); applyBundleHighlight(matrixHighlightCluster); })
-      .on('click', (ev, d) => { matrixHighlightCluster = null; applyBundleHighlight(null); setTileFilter({ mode: 'pair', a: d.a.id, b: d.b.id }); });
+      .on('click', (ev, d) => { matrixHighlightCluster = null; matrixLink = null; applyBundleHighlight(null); setTileFilter({ mode: 'pair', a: d.a.id, b: d.b.id }); });
 
     // cluster nodes + labels around the ring
     const node = g.append('g').selectAll('g.heb-node').data(leaves).enter().append('g')
@@ -523,7 +683,7 @@ export function renderSensemaking(container) {
       .attr('transform', d => d.x < Math.PI ? null : 'rotate(180)')
       .attr('fill', d => colorFor(d.data.hue, 0.48, 0.14))
       .style('cursor', 'pointer')
-      .text(d => clip(d.data.label, 22))
+      .text(d => clusterAcro[d.data.id])
       .on('mouseover', (ev, d) => {
         applyBundleHighlight(d.data.id);
         const c = d.data, conn = clusterList.reduce((s, o) => s + (matrixData[c.id]?.[o.id] || 0), 0);
@@ -533,6 +693,10 @@ export function renderSensemaking(container) {
       .on('mousemove', ev => tip.style('left', (ev.offsetX + 14) + 'px').style('top', (ev.offsetY - 10) + 'px'))
       .on('mouseout', () => { tip.style('opacity', 0); applyBundleHighlight(matrixHighlightCluster); })
       .on('click', (ev, d) => { matrixHighlightCluster = d.data.id; applyBundleHighlight(d.data.id); setTileFilter({ mode: 'cluster', id: d.data.id }); });
+
+    // Acronym key — maps each ring acronym back to its full cluster name.
+    host.style.position = 'relative';
+    host.appendChild(acroLegend('left'));
 
     applyBundleHighlight(matrixHighlightCluster);
   }
@@ -548,6 +712,32 @@ export function renderSensemaking(container) {
       !clusterId ? 1 : (d.data.id === clusterId || nbrs.has(d.data.id) ? 1 : 0.22));
     bundleSvg.selectAll('.heb-node circle').attr('opacity', d =>
       !clusterId ? 1 : (d.data.id === clusterId || nbrs.has(d.data.id) ? 1 : 0.25));
+  }
+
+  // Single entry point for "a dataset was picked" — routes to the Egonet tree
+  // (default) or straight into the Storyline trail (storytelling mode).
+  function openSelected(n) {
+    if (directStoryline) {
+      selectedNode = n;
+      highlightSelected();
+      // Picking a dataset reveals its storyline — auto-close Filterix so it isn't hidden.
+      storyCloseLens?.();
+      // Storyline renders INTO the right-hand canvas pane (not a full overlay).
+      const canvas = canvasWrap.querySelector('.st-canvas');
+      if (!canvas) return;
+      openStoryline(canvas, n, {
+        KG, nodeById, degree, adjacency,
+        // Restore the prompt WITHOUT wiping the canvas — the Filterix overlay is also a
+        // child here, so `innerHTML = …` would destroy it and break re-opening Filterix.
+        onClose: () => {
+          selectedNode = null; highlightSelected();
+          canvas.querySelector('.st-trail')?.remove();
+          if (!canvas.querySelector('.st-canvas-empty')) canvas.insertAdjacentHTML('afterbegin', canvasPromptHTML());
+        },
+      });
+    } else {
+      openEgonet(n, true);
+    }
   }
 
   function setTileFilter(f) { tileFilter = f; renderTiles(); }
@@ -602,6 +792,8 @@ export function renderSensemaking(container) {
     if (q) list = list.filter(n =>
       n.label?.toLowerCase().includes(q) || n.title?.toLowerCase().includes(q) ||
       n.keywords?.some(k => k.toLowerCase().includes(q)) ||
+      n.energies?.some(e => e.toLowerCase().includes(q)) ||
+      n.observables?.some(o => o.toLowerCase().includes(q)) ||
       n.authors?.some(a => a.toLowerCase().includes(q)) ||
       n.orgName?.toLowerCase().includes(q));
     // "Linked via" facet — keep datasets participating in ≥1 connection of any selected type (OR)
@@ -713,7 +905,7 @@ export function renderSensemaking(container) {
 
     grid.querySelectorAll('[data-node]').forEach(t => t.addEventListener('click', () => {
       const n = nodeById[t.dataset.node]; if (!n) return;
-      openEgonet(n, true);
+      openSelected(n);
     }));
     highlightSelected();
   }
@@ -776,6 +968,10 @@ export function renderSensemaking(container) {
         <div class="ego-detail-chips"><span class="ego-detail-chip">${esc(n.orgName)}</span></div></div>` : ''}
       ${n.keywords?.length ? `<div class="ego-detail-sec"><div class="ego-detail-k">${PROP_META.keyword.glyph} Keywords</div>
         <div class="ego-detail-chips">${n.keywords.map(k => `<span class="ego-detail-chip">${esc(k)}</span>`).join('')}</div></div>` : ''}
+      ${n.energies?.length ? `<div class="ego-detail-sec"><div class="ego-detail-k">√ Energy √s (GeV)</div>
+        <div class="ego-detail-chips">${n.energies.map(e => `<span class="ego-detail-chip">${esc(e)}</span>`).join('')}</div></div>` : ''}
+      ${n.observables?.length ? `<div class="ego-detail-sec"><div class="ego-detail-k">∂ Observables</div>
+        <div class="ego-detail-chips">${n.observables.map(o => `<span class="ego-detail-chip">${esc(o)}</span>`).join('')}</div></div>` : ''}
       ${n.description ? `<div class="ego-detail-sec"><div class="ego-detail-k">Abstract</div>
         <div class="ego-detail-desc">${esc(n.description)}</div></div>` : ''}
       ${n.dois?.length ? `<div class="ego-detail-sec"><div class="ego-detail-k">${PROP_META.doi.glyph} Cited DOIs</div>
@@ -1069,11 +1265,13 @@ export function renderSensemaking(container) {
     rtimer = setTimeout(() => {
       if (currentView === 'matrix') {
         const host = canvasWrap.querySelector('.sm-matrix-scroll');
-        if (host) drawActiveLeft(host);
+        // offsetParent is null while the lens overlay is hidden — skip those.
+        if (host && host.offsetParent) drawActiveLeft(host);
       }
     }, 200);
   });
   ro.observe(canvasWrap);
 
-  renderMatrix();
+  if (directStoryline) renderStoryLayout();
+  else renderMatrix();
 }

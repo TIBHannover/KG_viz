@@ -2,6 +2,8 @@ import { EnergyKG } from './data.js';
 import { renderHairball } from './hairball.js';
 import { renderAdaptive } from './adaptive.js';
 import { renderSensemaking } from './sensemaking.js';
+import { renderStorytelling } from './storytelling.js';
+import { renderLanding } from './landing.js';
 
 const s = EnergyKG.stats;
 document.getElementById("head-stats").innerHTML = `
@@ -12,14 +14,30 @@ document.getElementById("head-stats").innerHTML = `
 `;
 
 const view = document.getElementById("view");
-const tabs = document.querySelectorAll(".tab-btn");
+const select = document.getElementById("view-select");
+const homeBtn = document.getElementById("view-home");
 
-function setTab(name) {
-  tabs.forEach(t => t.classList.toggle("active", t.dataset.tab === name));
-  if (name === "hairball") renderHairball(view);
-  else if (name === "adaptive") renderAdaptive(view);
-  else renderSensemaking(view);
+// One module per view, selected from the dropdown / landing cards.
+const RENDERERS = {
+  hairball: renderHairball,
+  adaptive: renderAdaptive,
+  sensemaking: renderSensemaking,
+  storytelling: renderStorytelling,
+};
+
+function showLanding() {
+  select.value = '';
+  renderLanding(view, setView);
 }
 
-tabs.forEach(t => t.addEventListener("click", () => setTab(t.dataset.tab)));
-setTab("hairball");
+function setView(name) {
+  const renderer = RENDERERS[name];
+  if (!renderer) { showLanding(); return; }
+  select.value = name;
+  renderer(view);
+}
+
+select.addEventListener("change", () => setView(select.value));
+homeBtn.addEventListener("click", showLanding);
+
+showLanding();

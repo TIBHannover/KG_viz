@@ -281,6 +281,16 @@ function buildGraph(datasets) {
       };
 
       members.forEach((d, li) => {
+        // HEPData smuggles structured facets into dcat:keyword as "key: value"
+        // pairs — cmenergies (centre-of-mass energy √s) and observables (the
+        // measured quantity). Promote them to first-class node properties so they
+        // can drive their own connectors, and keep them out of the free-text list.
+        const kwList = [], energies = [], observables = [];
+        for (const kw of new Set(d.keywords)) {
+          const m = kw.match(/^(cmenergies|observables)\s*:\s*(.+)$/);
+          if (m) (m[1] === 'cmenergies' ? energies : observables).push(m[2].trim());
+          else kwList.push(kw);
+        }
         const n = {
           id:          `lf:${clId}:${li}`,
           level:       2,
@@ -293,7 +303,9 @@ function buildGraph(datasets) {
           hue:         srcDef.hue,
           weight:      1 + (li * 7) % 8,
           uri:         d.uri,
-          keywords:    d.keywords.slice(0, 6),
+          keywords:    kwList,                 // free-text dcat:keyword values (deduped)
+          energies,                            // cmenergies: √s (centre-of-mass energy)
+          observables,                         // observables: measured quantity (SIG, DSIG/DX…)
           publisher:   d.publisher,
           orgName:     d.orgName,
           vcardFn:     d.vcardFn,

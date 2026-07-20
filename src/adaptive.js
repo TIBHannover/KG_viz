@@ -3,8 +3,7 @@
 
 import * as d3 from 'd3';
 import { EnergyKG } from './data.js';
-
-function colorFor(hue, l = 0.58, c = 0.15) { return `oklch(${l} ${c} ${hue})`; }
+import { colorFor } from './helpers.js';
 
 export function renderAdaptive(container) {
   container.innerHTML = "";

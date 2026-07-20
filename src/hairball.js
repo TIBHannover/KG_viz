@@ -2,10 +2,7 @@
 
 import * as d3 from 'd3';
 import { EnergyKG } from './data.js';
-
-function colorFor(hue, lightness = 0.58, chroma = 0.15) {
-  return `oklch(${lightness} ${chroma} ${hue})`;
-}
+import { colorFor } from './helpers.js';
 
 // Canvas-safe colour constants (CSS vars don't resolve in canvas context)
 const C_INK   = '#1b1e23';
