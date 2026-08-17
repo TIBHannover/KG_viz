@@ -20,12 +20,17 @@ const MEMBER_CAP = 60;   // tiles shown per connector before "showing top N"
 export function openStoryline(host, seed, ctx) {
   const { KG, nodeById, degree, adjacency } = ctx;
 
+  host.__stRO?.disconnect();
   host.querySelector('.st-trail')?.remove();
   const overlay = document.createElement('div');
   overlay.className = 'st-trail';
   overlay.innerHTML = `
     <div class="st-trail-head">
       <span class="st-trail-title">STORYLINE</span>
+      <span class="st-layout-toggle">
+        <button data-layout="grid" title="Coordinate grid">⌗ Grid</button>
+        <button data-layout="spine" title="Story spine (node-link)">⑂ Spine</button>
+      </span>
       <span class="st-trail-hint">click a dataset title to drill in · breadcrumb to go back</span>
       <button class="st-trail-close" title="Close storyline">✕ close</button>
     </div>
@@ -35,9 +40,18 @@ export function openStoryline(host, seed, ctx) {
   const bc = overlay.querySelector('.st-bc');
   const flow = overlay.querySelector('.st-flow');
   const flowwrap = overlay.querySelector('.st-flowwrap');
-  overlay.querySelector('.st-trail-close').onclick = () => { overlay.remove(); ctx.onClose?.(); };
+  // Re-centre the spine when the canvas resizes (e.g. the split-layout transition).
+  let roTimer;
+  const ro = new ResizeObserver(() => {
+    clearTimeout(roTimer);
+    roTimer = setTimeout(() => { if (layout === 'spine' && overlay.isConnected) renderSpine(); }, 90);
+  });
+  ro.observe(host);
+  host.__stRO = ro;
+  overlay.querySelector('.st-trail-close').onclick = () => { ro.disconnect(); host.__stRO = null; overlay.remove(); ctx.onClose?.(); };
 
   let trail = [seed];
+  let layout = 'grid';   // 'grid' (coordinate rows) | 'spine' (node-link story spine)
   let selected = null;   // { prop, value } of the picked connector, or null
   const expandedTiles = new Set();   // connected-dataset ids whose tile is expanded to its record
   const expandedBands = new Set();   // connector props whose band is expanded past the cap
@@ -97,32 +111,24 @@ export function openStoryline(host, seed, ctx) {
       <span class="st-tile-toggle-cv">${open ? '▴' : '▾'}</span>${open ? 'Less' : 'More details'}</button>`;
   }
 
-  // Focal detail shown BESIDE the focal tile (same Dataset row) — the parts not on the
-  // tile: abstract · cited DOIs · link. Empty (no block) when the dataset has none.
-  function focalDetailHTML(n) {
+  // The focal dataset, rendered as an unboxed editorial block rather than a tile: it is the
+  // SUBJECT of the story, so it gets headline treatment. Kicker (domain › cluster · deg) →
+  // title → abstract → cited DOIs → link. Author/keywords are deliberately omitted — they
+  // are the connector bands right below. A domain-hue left rule keeps the colour encoding.
+  function focalBlockHTML(n) {
     const doiTxt = d => d.replace(/^https?:\/\/(dx\.)?doi\.org\//, '');
     const sec = (k, body) => `<div class="st-det-sec"><div class="st-det-k">${k}</div>${body}</div>`;
-    if (!(n.description || n.dois?.length || n.uri)) return '';
-    return `<div class="st-focal-detail">
+    return `<div class="st-focal" style="border-left-color:${colorFor(n.hue)}">
+      <div class="st-focal-kicker">
+        <span class="st-focal-dot" style="background:${colorFor(n.hue)}"></span>
+        <span>${esc(KG.domains[n.domain]?.label || '')} › ${esc(KG.clusters[n.cluster]?.label || '')}</span>
+        <span class="st-focal-deg">deg ${degree[n.id] || 0}</span>
+      </div>
+      <div class="st-focal-title">${esc(n.title || n.label)}</div>
       ${n.description ? sec('Abstract', `<div class="st-det-desc">${esc(n.description)}</div>`) : ''}
       ${n.dois?.length ? sec(`${GLYPH.doi} Cited DOIs`,
         n.dois.map(d => `<a class="st-det-link" href="${esc(d)}" target="_blank" rel="noopener">${esc(doiTxt(d))} ↗</a>`).join('')) : ''}
       ${n.uri ? `<a class="st-det-open" href="${esc(n.uri)}" target="_blank" rel="noopener">Open dataset ↗</a>` : ''}
-    </div>`;
-  }
-
-  // The focal dataset tile (abstract/DOI sit beside it — see focalDetailHTML).
-  function tileHTML(n) {
-    const kw = (n.keywords || []).slice(0, 3).map(k => `<span class="sm-tile-chip">${GLYPH.keyword} ${esc(clip(k, 16))}</span>`).join('');
-    return `<div class="sm-tile st-tile" style="border-left-color:${colorFor(n.hue)}">
-      <div class="sm-tile-top"><span class="sm-tile-dot" style="background:${colorFor(n.hue)}"></span><span class="sm-tile-deg">deg ${degree[n.id] || 0}</span></div>
-      <div class="sm-tile-title" title="${esc(n.title || n.label)}">${esc(clip(n.title || n.label, 90))}</div>
-      <div class="sm-tile-meta">${esc(KG.domains[n.domain].label)} › ${esc(KG.clusters[n.cluster].label)}</div>
-      <div class="sm-tile-chips">
-        ${n.authors?.[0] ? `<span class="sm-tile-chip">${GLYPH.author} ${esc(clip(n.authors[0], 18))}</span>` : ''}
-        ${n.orgName ? `<span class="sm-tile-chip">${GLYPH.org} ${esc(clip(n.orgName, 18))}</span>` : ''}
-        ${kw}
-      </div>
     </div>`;
   }
 
@@ -176,18 +182,32 @@ export function openStoryline(host, seed, ctx) {
     bc.querySelectorAll('.st-bc-crumb').forEach(b => b.onclick = () => { trail = trail.slice(0, +b.dataset.i + 1); selected = null; expandedBands.clear(); render(); });
   }
 
-  function render() {
-    const focal = trail[trail.length - 1];
-    const cl = KG.clusters[focal.cluster];
+  // Connector bands the focal dataset actually has (shared by both layouts).
+  function bandsOf(focal) {
     const conn = connectorsOf(focal);
-    // Connector bands (only those the focal dataset actually has), each its own row.
-    const bands = [
+    return [
       { prop: 'author',     label: 'Authors',     list: conn.authors },
       { prop: 'keyword',    label: 'Keywords',    list: conn.keywords },
       { prop: 'energy',     label: 'Energy √s',   list: conn.energies },
       { prop: 'observable', label: 'Observables', list: conn.observables },
     ].filter(b => b.list.length);
+  }
+
+  function render() {
     renderBreadcrumb();
+    overlay.querySelectorAll('.st-layout-toggle button')
+      .forEach(b => b.classList.toggle('active', b.dataset.layout === layout));
+    if (layout === 'spine') renderSpine(); else renderGrid();
+  }
+  overlay.querySelectorAll('.st-layout-toggle button').forEach(b => b.onclick = () => {
+    layout = b.dataset.layout; render();
+    flowwrap.scrollTop = 0; flowwrap.scrollLeft = 0;
+  });
+
+  function renderGrid() {
+    const focal = trail[trail.length - 1];
+    const cl = KG.clusters[focal.cluster];
+    const bands = bandsOf(focal);
 
     // Row layout: Topic (1) · Dataset (2) · one row per band · Connected datasets (last).
     let r = 2;
@@ -217,7 +237,7 @@ export function openStoryline(host, seed, ctx) {
       + `<div class="st-cell" style="grid-row:1;grid-column:2">
            <div class="st-topic"><div class="st-topic-k">TOPIC</div><div class="st-topic-l">${esc(cl?.label || '')}</div><div class="st-topic-s">${esc(KG.domains[focal.domain]?.label || '')}</div></div>
          </div>`
-      + `<div class="st-cell st-dataset-cell" style="grid-row:2;grid-column:2">${tileHTML(focal)}${focalDetailHTML(focal)}</div>`
+      + `<div class="st-cell" style="grid-row:2;grid-column:2">${focalBlockHTML(focal)}</div>`
       + bands.map(b => `<div class="st-cell st-chips" style="grid-row:${b.row};grid-column:2">${bandChips(b)}</div>`).join('')
       + `<div class="st-cell" style="grid-row:${connRow};grid-column:2">${connected}</div>`
       + `</div>`;
@@ -253,6 +273,149 @@ export function openStoryline(host, seed, ctx) {
     // clicks inside the expanded detail (DOI links, "Open dataset") must not
     // bubble to the tile's drill-in handler and open a new storyline.
     flow.querySelectorAll('.st-tile-detail').forEach(d => d.onclick = ev => ev.stopPropagation());
+  }
+
+  // ════════════════════════════════════════════════════════════════
+  //  SPINE layout — a vertical narrative trunk of hub nodes, each fanning out to ALL of
+  //  its values (nothing collapsed). Nodes are absolutely-positioned HTML (so the focal
+  //  tile stays a real tile) over an SVG layer that draws the trunk + spokes.
+  //     TOPIC → DATASET(+abstract) → AUTHORS → KEYWORDS → ENERGY → OBSERVABLES → CONNECTED
+  // ════════════════════════════════════════════════════════════════
+  function renderSpine() {
+    const focal = trail[trail.length - 1];
+    const cl = KG.clusters[focal.cluster];
+    const bands = bandsOf(focal);
+
+    const PAD = 20, VAL_W = 200, VAL_H = 26, ROW_H = 34, GAP_X = 34;
+    const HUB_H = 34, V_GAP = 34;
+    // Trunk (y-axis) centred in the available canvas width, so the spine sits in the middle.
+    const AREA = Math.max(560, (flowwrap.clientWidth || 900) - 48);
+    const TRUNK_X = Math.round(AREA / 2);
+
+    flow.innerHTML = `<div class="st-spine"><svg class="sp-edges"></svg></div>`;
+    const spine = flow.querySelector('.st-spine');
+    const svg = flow.querySelector('.sp-edges');
+
+    let maxRight = 0;
+    const edges = [];
+    const add = (cls, x, w, html, data) => {
+      const el = document.createElement('div');
+      el.className = 'sp-node ' + cls;
+      el.style.left = x + 'px'; el.style.width = w + 'px';
+      el.innerHTML = html;
+      if (data) Object.assign(el.dataset, data);
+      spine.appendChild(el);
+      maxRight = Math.max(maxRight, x + w);
+      return el;
+    };
+    // fan ALL values of a hub out to alternating left/right columns
+    const fan = (items, hubBottom, mk) => {
+      const top = hubBottom + 16;
+      items.forEach((it, i) => {
+        const right = i % 2 === 1, row = Math.floor(i / 2);
+        const x = right ? TRUNK_X + GAP_X : TRUNK_X - GAP_X - VAL_W;
+        const yy = top + row * ROW_H;
+        mk(it, x, yy);
+        edges.push({ x1: TRUNK_X, y1: hubBottom, x2: right ? x : x + VAL_W, y2: yy + VAL_H / 2, cls: 'sp-spoke' });
+      });
+      const rows = Math.ceil(items.length / 2);
+      return rows ? top + (rows - 1) * ROW_H + VAL_H : hubBottom;
+    };
+
+    let y = PAD;
+    // TOPIC
+    const topicW = 300;
+    const topicEl = add('sp-topic', TRUNK_X - topicW / 2, topicW,
+      `<div class="sp-k">TOPIC</div><div class="sp-topic-l">${esc(cl?.label || '')}</div><div class="sp-topic-s">${esc(KG.domains[focal.domain]?.label || '')}</div>`);
+    topicEl.style.top = y + 'px';
+    let prevBottom = y + topicEl.offsetHeight;
+    y = prevBottom + V_GAP;
+
+    // DATASET — unboxed text block, centred on the trunk (trunk enters top/exits bottom)
+    const FOCAL_W = Math.min(720, AREA - 40);
+    const focalEl = add('sp-focal', TRUNK_X - FOCAL_W / 2, FOCAL_W, focalBlockHTML(focal));
+    focalEl.style.top = y + 'px';
+    edges.push({ x1: TRUNK_X, y1: prevBottom, x2: TRUNK_X, y2: y, cls: 'sp-trunk' });
+    prevBottom = y + focalEl.offsetHeight;
+    y = prevBottom + V_GAP;
+
+    // CONNECTOR HUBS — every value fanned out, none collapsed
+    bands.forEach(b => {
+      const hubW = 190, hubY = y;
+      const hubEl = add('sp-hub sp-cprop-' + b.prop, TRUNK_X - hubW / 2, hubW,
+        `<span class="sp-hub-g">${GLYPH[b.prop]}</span><span class="sp-hub-l">${esc(b.label.toUpperCase())}</span><span class="sp-hub-n">${b.list.length}</span>`);
+      hubEl.style.top = hubY + 'px';
+      edges.push({ x1: TRUNK_X, y1: prevBottom, x2: TRUNK_X, y2: hubY, cls: 'sp-trunk' });
+      const hubBottom = hubY + HUB_H;
+      const list = b.list.slice().sort((p, q) => p.members.length - q.members.length);
+      const fanBottom = fan(list, hubBottom, (c, x, yy) => {
+        const sel = selected && selected.prop === b.prop && selected.value === c.value;
+        const el = add(`sp-val sp-cprop-${b.prop}${sel ? ' sel' : ''}`, x, VAL_W,
+          `<span class="sp-val-g">${GLYPH[b.prop]}</span><span class="sp-val-v" title="${esc(c.value)}">${esc(clip(c.value, 24))}</span><span class="sp-val-n">${c.members.length}</span>`,
+          { prop: b.prop, value: c.value });
+        el.style.top = yy + 'px';
+      });
+      prevBottom = hubBottom;
+      y = fanBottom + V_GAP;
+    });
+
+    // CONNECTED DATASETS
+    const chubW = 230, chubY = y;
+    const chubEl = add('sp-hub sp-hub-conn', TRUNK_X - chubW / 2, chubW,
+      `<span class="sp-hub-l">CONNECTED DATASETS</span>`);
+    chubEl.style.top = chubY + 'px';
+    edges.push({ x1: TRUNK_X, y1: prevBottom, x2: TRUNK_X, y2: chubY, cls: 'sp-trunk' });
+    const chubBottom = chubY + HUB_H;
+    let bottom = chubBottom;
+    if (!selected) {
+      const p = add('sp-prompt', TRUNK_X - 190, 380, 'Select a connector above to fan out its connected datasets.');
+      p.style.top = (chubBottom + 16) + 'px';
+      bottom = chubBottom + 16 + p.offsetHeight;
+    } else {
+      const band = bands.find(b => b.prop === selected.prop);
+      const c = band?.list.find(x => x.value === selected.value);
+      const members = c ? c.members : [];
+      const shown = members.slice(0, MEMBER_CAP);
+      bottom = fan(shown, chubBottom, (m, x, yy) => {
+        const el = add('sp-val sp-conn', x, VAL_W,
+          `<span class="sp-val-dot" style="background:${colorFor(m.hue)}"></span><span class="sp-val-v" title="${esc(m.title || m.label)}">${esc(clip(m.title || m.label, 24))}</span><span class="sp-val-n">${degree[m.id] || 0}</span>`,
+          { eid: m.id });
+        el.style.top = yy + 'px';
+      });
+      if (!members.length) {
+        const p = add('sp-prompt', TRUNK_X - 190, 380, `No other dataset shares this ${selected.prop}.`);
+        p.style.top = (chubBottom + 16) + 'px';
+        bottom = chubBottom + 16 + p.offsetHeight;
+      } else if (members.length > MEMBER_CAP) {
+        const p = add('sp-prompt', TRUNK_X - 190, 380, `Showing the ${MEMBER_CAP} most-connected of ${members.length}.`);
+        p.style.top = (bottom + 12) + 'px';
+        bottom = bottom + 12 + p.offsetHeight;
+      }
+    }
+
+    // size the canvas + paint the edges beneath the nodes. Width = the area (so the
+    // centred trunk lands in the middle of the pane); grows only if content overflows.
+    const W = Math.max(AREA, maxRight + PAD), H = bottom + PAD;
+    spine.style.width = W + 'px'; spine.style.height = H + 'px';
+    svg.setAttribute('width', W); svg.setAttribute('height', H);
+    svg.innerHTML = edges.map(e => e.cls === 'sp-trunk'
+      ? `<line class="sp-trunk" x1="${e.x1}" y1="${e.y1}" x2="${e.x2}" y2="${e.y2}"/>`
+      : `<path class="sp-spoke" d="M${e.x1},${e.y1} C${e.x1},${(e.y1 + e.y2) / 2} ${e.x2},${(e.y1 + e.y2) / 2} ${e.x2},${e.y2}"/>`).join('')
+      + edges.filter(e => e.cls === 'sp-trunk').map(e => `<circle class="sp-joint" cx="${e.x2}" cy="${e.y2}" r="3"/>`).join('');
+
+    // interactions
+    spine.querySelectorAll('.sp-val[data-prop]').forEach(el => el.onclick = () => {
+      const prop = el.dataset.prop, value = el.dataset.value;
+      selected = (selected && selected.prop === prop && selected.value === value) ? null : { prop, value };
+      render();
+    });
+    spine.querySelectorAll('.sp-val[data-eid]').forEach(el => el.onclick = () => {
+      const n = nodeById[el.dataset.eid];
+      if (!n) return;
+      trail.push(n); selected = null; expandedBands.clear(); render();
+      flowwrap.scrollTop = 0; flowwrap.scrollLeft = 0;
+    });
+    spine.querySelectorAll('.sp-focal').forEach(d => d.onclick = ev => ev.stopPropagation());
   }
 
   render();

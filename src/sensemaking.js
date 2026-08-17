@@ -135,7 +135,8 @@ export function renderSensemaking(container, options = {}) {
   let matrixSvg = null;
   let mxRefresh = null;                    // matrix: re-applies the crosshair for the current selection
   let matrixDisplayW = null;               // matrix: user-dragged display width (px); null = auto-fit column
-  let storyCloseLens = null;               // storytelling: closes the Filterix overlay (set in renderStoryLayout)
+  let storyCloseLens = null;               // storytelling: hides the Filterix overlay (set in renderStoryLayout)
+  let storySetSplit = null;                // storytelling: sets the split layout state ('browse'|'filterix'|'story')
   let matrixHighlightCluster = null;
   let matrixLink = null;                   // matrix only: a selected connection { a, b }
   let matrixMode = 'matrix';              // 'matrix' | 'chord' | 'bundle'
@@ -286,18 +287,35 @@ export function renderSensemaking(container, options = {}) {
       <div class="sm-col-matrix">${matrixColMarkup()}</div>`;
     canvas.appendChild(mo);
 
+    // Layout states drive the split ratio (CSS transitions grid-template-columns):
+    //   browse   → tiles fill the canvas (right pane collapsed)
+    //   filterix → tiles ~60% · Filterix ~40%
+    //   story    → tiles ~30% · storyline spine ~70%
+    const setState = s => {
+      split.classList.toggle('fx-open', s === 'filterix');
+      split.classList.toggle('story-open', s === 'story');
+    };
+    const hasStory = () => !!canvas.querySelector('.st-trail');
+    storySetSplit = setState;
+    storyCloseLens = () => { mo.style.display = 'none'; };   // hide Filterix (state handled by caller)
+
     let matrixWired = false;
     const openLens = () => {
+      setState('filterix');
       mo.style.display = 'flex';
       // Draw only once the overlay is visible — the matrix sizes to its container.
       if (!matrixWired) { wireMatrixControls(mo.querySelector('.sm-col-matrix')); matrixWired = true; }
       else drawActiveLeft(mo.querySelector('.sm-matrix-scroll'));
     };
-    const closeLens = () => { mo.style.display = 'none'; };
-    storyCloseLens = closeLens;   // so selecting a dataset can auto-close Filterix
+    const closeLens = () => { mo.style.display = 'none'; setState(hasStory() ? 'story' : 'browse'); };
     mo.querySelector('.st-mo-close').onclick = closeLens;
     const lensBtn = main.querySelector('#st-lens-btn');
     if (lensBtn) lensBtn.onclick = () => (mo.style.display === 'none' ? openLens() : closeLens());
+    // Re-fit the matrix once the split finishes resizing (it sizes to its container).
+    split.addEventListener('transitionend', e => {
+      if (e.propertyName === 'grid-template-columns' && mo.style.display !== 'none' && matrixWired)
+        drawActiveLeft(mo.querySelector('.sm-matrix-scroll'));
+    });
 
     wireTilesControls(split);
     renderTiles();
@@ -720,7 +738,8 @@ export function renderSensemaking(container, options = {}) {
     if (directStoryline) {
       selectedNode = n;
       highlightSelected();
-      // Picking a dataset reveals its storyline — auto-close Filterix so it isn't hidden.
+      // Picking a dataset opens the spine (canvas ~70%, tiles shrink left) and hides Filterix.
+      storySetSplit?.('story');
       storyCloseLens?.();
       // Storyline renders INTO the right-hand canvas pane (not a full overlay).
       const canvas = canvasWrap.querySelector('.st-canvas');
@@ -731,6 +750,7 @@ export function renderSensemaking(container, options = {}) {
         // child here, so `innerHTML = …` would destroy it and break re-opening Filterix.
         onClose: () => {
           selectedNode = null; highlightSelected();
+          storySetSplit?.('browse');   // collapse the canvas → tiles fill again
           canvas.querySelector('.st-trail')?.remove();
           if (!canvas.querySelector('.st-canvas-empty')) canvas.insertAdjacentHTML('afterbegin', canvasPromptHTML());
         },
