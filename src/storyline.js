@@ -12,6 +12,7 @@
 //
 // No "inference" framing — every connector is a stated shared property.
 
+import * as d3 from 'd3';
 import { colorFor, esc, clip } from './helpers.js';
 
 const GLYPH = { author: '✎', keyword: '#', org: '⌂', doi: '◈', energy: '√', observable: '∂' };
@@ -31,31 +32,201 @@ export function openStoryline(host, seed, ctx) {
         <button data-layout="grid" title="Coordinate grid">⌗ Grid</button>
         <button data-layout="spine" title="Story spine (node-link)">⑂ Spine</button>
       </span>
-      <span class="st-trail-hint">click a dataset title to drill in · breadcrumb to go back</span>
+      <span class="st-trail-hint">click a dataset title to drill in · breadcrumb jumps back &amp; forward, keeping each view</span>
       <button class="st-trail-close" title="Close storyline">✕ close</button>
     </div>
     <div class="st-bc"></div>
-    <div class="st-flowwrap"><div class="st-flow"></div></div>`;
+    <div class="st-flowwrap"><div class="st-flow"></div></div>
+    <div class="sp-zoom" hidden>
+      <button data-z="out" title="Zoom out">－</button>
+      <button class="sp-zoom-pct" data-z="reset" title="Reset to 100%">100%</button>
+      <button data-z="in" title="Zoom in">＋</button>
+      <button data-z="fit" title="Fit spine to view">⤢ Fit</button>
+    </div>`;
   host.appendChild(overlay);
   const bc = overlay.querySelector('.st-bc');
   const flow = overlay.querySelector('.st-flow');
   const flowwrap = overlay.querySelector('.st-flowwrap');
+  const zoomCtl = overlay.querySelector('.sp-zoom');
   // Re-centre the spine when the canvas resizes (e.g. the split-layout transition).
   let roTimer;
   const ro = new ResizeObserver(() => {
     clearTimeout(roTimer);
-    roTimer = setTimeout(() => { if (layout === 'spine' && overlay.isConnected) renderSpine(); }, 90);
+    roTimer = setTimeout(() => { if (layout === 'spine' && overlay.isConnected) { stopPan(); renderSpine(); } }, 90);
   });
   ro.observe(host);
   host.__stRO = ro;
   overlay.querySelector('.st-trail-close').onclick = () => { ro.disconnect(); host.__stRO = null; overlay.remove(); ctx.onClose?.(); };
 
-  let trail = [seed];
-  let layout = 'grid';   // 'grid' (coordinate rows) | 'spine' (node-link story spine)
-  let selected = null;   // { prop, value } of the picked connector, or null
-  const expandedTiles = new Set();   // connected-dataset ids whose tile is expanded to its record
-  const expandedBands = new Set();   // connector props whose band is expanded past the cap
+  // Navigation history is a stack of FRAMES, not just a list of nodes. Each frame remembers
+  // the WHOLE view at that level — the focal dataset, the picked connector (i.e. the open
+  // hairball) and its expanded bands/tiles — so jumping around the breadcrumb restores exactly
+  // what you were looking at instead of resetting it. `cursor` points at the visible frame;
+  // frames after it are kept (forward history) so you can step back out to where you were.
+  const newFrame = (node, lay) => ({ node, selected: null, layout: lay, expandedBands: new Set(), expandedTiles: new Set() });
+  let frames = [newFrame(seed, 'grid')];
+  let cursor = 0;
+  // Live mirrors of the current frame's state (kept so the render code below reads/writes plain
+  // variables). snapshot() flushes them back into the frame before any navigation; loadFrame()
+  // re-points them at another frame.
+  let layout, selected, expandedTiles, expandedBands;
   const BAND_CAP = 10;               // connector chips shown per band before "＋N more"
+  function snapshot() {
+    const f = frames[cursor];
+    f.layout = layout; f.selected = selected; f.expandedBands = expandedBands; f.expandedTiles = expandedTiles;
+  }
+  function loadFrame(i) {
+    cursor = Math.max(0, Math.min(i, frames.length - 1));
+    const f = frames[cursor];
+    layout = f.layout; selected = f.selected; expandedBands = f.expandedBands; expandedTiles = f.expandedTiles;
+  }
+  // Drill into a dataset: remember the current view, drop any forward history that would be
+  // orphaned by this new branch, then push and show a fresh frame (same layout mode).
+  function drillInto(n) {
+    if (!n) return;
+    snapshot();
+    frames = frames.slice(0, cursor + 1);
+    frames.push(newFrame(n, layout));
+    loadFrame(frames.length - 1);
+    render();
+    stopPan();
+    flowwrap.scrollTop = 0; flowwrap.scrollLeft = 0;
+  }
+  loadFrame(0);
+
+  // ── Spine zoom (CSS-transform based, so it never re-runs the force layout). The spine's
+  // natural size (spineW × spineH) is remembered by renderSpine; applyZoom scales the .st-spine
+  // and reserves the scaled footprint on .st-flow so the scrollbars stay correct. ──
+  const ZOOM_MIN = 0.2, ZOOM_MAX = 3;
+  let zoom = 1, spineW = 0, spineH = 0;
+  function applyZoom() {
+    const spine = flow.querySelector('.st-spine');
+    if (spine) {
+      spine.style.transformOrigin = 'top left';
+      spine.style.transform = zoom === 1 ? '' : `scale(${zoom})`;
+      // Size .st-flow to the SCALED footprint (overriding its min-width:100%) and centre it, so a
+      // spine narrower than the pane sits centred — there is no horizontal scrollbar to nudge.
+      flow.style.minWidth = '0';
+      flow.style.margin = '0 auto';
+      flow.style.width = (spineW * zoom) + 'px';
+      flow.style.height = (spineH * zoom) + 'px';
+    }
+    const pct = zoomCtl.querySelector('.sp-zoom-pct');
+    if (pct) pct.textContent = Math.round(zoom * 100) + '%';
+  }
+  // Set zoom, keeping the point (cx,cy) — in flowwrap-viewport coords — stationary on screen.
+  function setZoom(z, cx, cy) {
+    z = Math.max(ZOOM_MIN, Math.min(z, ZOOM_MAX));
+    if (z === zoom) return;
+    const rect = flowwrap.getBoundingClientRect();
+    if (cx == null) { cx = rect.width / 2; cy = rect.height / 2; }
+    const contentX = flowwrap.scrollLeft + cx, contentY = flowwrap.scrollTop + cy;
+    const k = z / zoom;
+    zoom = z; applyZoom();
+    flowwrap.scrollLeft = contentX * k - cx;
+    flowwrap.scrollTop = contentY * k - cy;
+  }
+  // Fit the whole spine within the viewport (never upscales past 1:1). Because the fit zoom always
+  // makes the spine fit horizontally, the centred flow needs no horizontal scroll — start at top.
+  function fitSpine() {
+    if (!spineW || !spineH) return;
+    const padX = 40, padY = 40;
+    const z = Math.min((flowwrap.clientWidth - padX) / spineW, (flowwrap.clientHeight - padY) / spineH, 1);
+    zoom = Math.max(ZOOM_MIN, z); applyZoom();
+    flowwrap.scrollTop = 0; flowwrap.scrollLeft = 0;
+  }
+  // ── Animated pan ("camera move"). Picking a connector puts its bloom off to the right, often
+  // entirely off-screen — a hard jump there is disorienting and a fit rescales the whole spine.
+  // Gliding the viewport instead keeps the zoom level AND lets you watch where you travelled, so
+  // the spatial model survives. pendingBloomPan is set true by a connector SELECT (not deselect)
+  // and consumed at the end of the next renderSpine, once the bloom's DOM actually exists. ──
+  let panRAF = 0, pendingBloomPan = false;
+  const stopPan = () => { cancelAnimationFrame(panRAF); panRAF = 0; };
+  function animatePan(toLeft, toTop, ms = 460) {
+    stopPan();
+    const maxL = Math.max(0, flowwrap.scrollWidth - flowwrap.clientWidth);
+    const maxT = Math.max(0, flowwrap.scrollHeight - flowwrap.clientHeight);
+    toLeft = Math.max(0, Math.min(toLeft, maxL));
+    toTop = Math.max(0, Math.min(toTop, maxT));
+    const fromLeft = flowwrap.scrollLeft, fromTop = flowwrap.scrollTop;
+    const dL = toLeft - fromLeft, dT = toTop - fromTop;
+    if (Math.abs(dL) < 1 && Math.abs(dT) < 1) return;
+    if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) {
+      flowwrap.scrollLeft = toLeft; flowwrap.scrollTop = toTop; return;
+    }
+    const t0 = performance.now();
+    const ease = t => t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;   // easeInOutCubic
+    const step = now => {
+      const k = ease(Math.min(1, (now - t0) / ms));
+      flowwrap.scrollLeft = fromLeft + dL * k;
+      flowwrap.scrollTop = fromTop + dT * k;
+      if (k < 1) panRAF = requestAnimationFrame(step);
+    };
+    panRAF = requestAnimationFrame(step);
+  }
+  // Glide until rect `r` (viewport coords, e.g. from getBoundingClientRect) is framed in the
+  // viewport — centred when it fits, else its top-left corner brought just inside. Measuring live
+  // rects means zoom, padding and the centred .st-flow are all already baked in, so no separate
+  // coordinate maths is needed here.
+  function panToRect(r, horizOnly) {
+    if (!r) return;
+    const w = flowwrap.getBoundingClientRect();
+    const PADV = 40;
+    const wantX = r.width <= w.width ? (w.width - r.width) / 2 : PADV;
+    const wantY = r.height <= w.height ? (w.height - r.height) / 2 : PADV;
+    const toLeft = flowwrap.scrollLeft + ((r.left - w.left) - wantX);
+    const toTop = horizOnly ? flowwrap.scrollTop : flowwrap.scrollTop + ((r.top - w.top) - wantY);
+    animatePan(toLeft, toTop);
+  }
+  const panToEl = (el, horizOnly) => el && panToRect(el.getBoundingClientRect(), horizOnly);
+  zoomCtl.querySelectorAll('button').forEach(b => b.onclick = () => {
+    stopPan();
+    const a = b.dataset.z;
+    if (a === 'in') setZoom(zoom * 1.2);
+    else if (a === 'out') setZoom(zoom / 1.2);
+    else if (a === 'reset') setZoom(1);
+    else if (a === 'fit') fitSpine();
+  });
+  // ⌘/Ctrl + wheel zooms toward the cursor (plain wheel still scrolls the pane). Either way the
+  // user has taken the wheel, so any camera move in flight is abandoned rather than fought.
+  flowwrap.addEventListener('wheel', e => {
+    if (layout !== 'spine') return;
+    stopPan();
+    if (!(e.ctrlKey || e.metaKey)) return;
+    e.preventDefault();
+    const rect = flowwrap.getBoundingClientRect();
+    setZoom(zoom * (e.deltaY < 0 ? 1.12 : 1 / 1.12), e.clientX - rect.left, e.clientY - rect.top);
+  }, { passive: false });
+  // Drag anywhere on the spine canvas to pan it (grab / grabbing). A small movement threshold
+  // keeps plain clicks working — a connector pick / node drill-in only fires when you DON'T drag,
+  // and the click the browser synthesises after a real drag is swallowed. Move/up listeners live
+  // only for the duration of a drag, so nothing leaks when the storyline closes.
+  flowwrap.addEventListener('mousedown', e => {
+    if (layout !== 'spine' || e.button !== 0) return;
+    stopPan();   // grabbing the canvas cancels any camera move in flight
+    const sx = e.clientX, sy = e.clientY, l0 = flowwrap.scrollLeft, t0 = flowwrap.scrollTop;
+    let moved = false;
+    const move = ev => {
+      if (!moved && Math.hypot(ev.clientX - sx, ev.clientY - sy) < 4) return;
+      moved = true;
+      flowwrap.classList.add('sp-grabbing');
+      flowwrap.scrollLeft = l0 - (ev.clientX - sx);
+      flowwrap.scrollTop = t0 - (ev.clientY - sy);
+      ev.preventDefault();
+    };
+    const up = () => {
+      document.removeEventListener('mousemove', move);
+      document.removeEventListener('mouseup', up);
+      flowwrap.classList.remove('sp-grabbing');
+      if (moved) {   // swallow the click that follows a real drag, then drop the guard
+        const swallow = ev => { ev.stopPropagation(); ev.preventDefault(); };
+        flowwrap.addEventListener('click', swallow, { capture: true, once: true });
+        setTimeout(() => flowwrap.removeEventListener('click', swallow, { capture: true }), 0);
+      }
+    };
+    document.addEventListener('mousemove', move);
+    document.addEventListener('mouseup', up);
+  });
 
   // Global indexes: each connector property → datasets that carry each value
   // (built once per launch). energy = cmenergies (√s) · observable = measured quantity.
@@ -132,9 +303,27 @@ export function openStoryline(host, seed, ctx) {
     </div>`;
   }
 
+  // A connector's signal quality, for visual flagging (see .st-chip-*/.sp-val-* CSS):
+  //   'dead' — no OTHER dataset shares it: a branch to nowhere → dimmed grey.
+  //   'red'  — very broad: shared by >500 datasets. Filled solid red with NO outline; the fill
+  //            DEEPENS with the connection count, reaching maximum redness at 2000+ (redFill).
+  const RED_LOW = 500, RED_HIGH = 2000;
+  const connClass = members => !members.length ? 'dead' : (members.length > RED_LOW ? 'red' : '');
+  // Graduated red: light-ish at 500 → deep/max at 2000+ (darker & a touch more saturated).
+  function redFill(count) {
+    const t = Math.max(0, Math.min(1, (count - RED_LOW) / (RED_HIGH - RED_LOW)));
+    const L = (0.56 - 0.18 * t).toFixed(3);   // lightness drops → darker with more connections
+    const C = (0.155 + 0.06 * t).toFixed(3);  // chroma rises → a touch more saturated
+    return `oklch(${L} ${C} 25)`;
+  }
+  const connHint = q => q === 'red' ? ' — very broad (>500 datasets share this)'
+    : q === 'dead' ? ' — no other dataset shares this' : '';
+
   function chipBtn(c, prop) {
     const sel = selected && selected.prop === prop && selected.value === c.value;
-    return `<button class="st-chip st-cprop-${prop}${sel ? ' sel' : ''}" data-prop="${prop}" data-value="${esc(c.value)}" title="${esc(c.value)}">
+    const q = sel ? '' : connClass(c.members);   // selection styling wins; don't flag while picked
+    const style = q === 'red' ? ` style="background:${redFill(c.members.length)}"` : '';
+    return `<button class="st-chip st-cprop-${prop}${sel ? ' sel' : ''}${q ? ' st-chip-' + q : ''}"${style} data-prop="${prop}" data-value="${esc(c.value)}" title="${esc(c.value)}${connHint(q)}">
       <span class="st-chip-g">${GLYPH[prop]}</span>
       <span class="st-chip-v">${esc(clip(c.value, 32))}</span>
       <span class="st-chip-n">${c.members.length}</span>
@@ -173,13 +362,15 @@ export function openStoryline(host, seed, ctx) {
   const axisCell = (label, row) => `<div class="st-axis" style="grid-row:${row}"><span class="st-axis-l">${label}</span><span class="st-axis-tick"></span></div>`;
 
   function renderBreadcrumb() {
-    bc.innerHTML = `<span class="st-bc-k">TRAIL</span>` + trail.map((n, i) => {
-      const cur = i === trail.length - 1;
-      return `<button class="st-bc-crumb${cur ? ' current' : ''}" data-i="${i}" title="${esc(n.title || n.label)}">
+    bc.innerHTML = `<span class="st-bc-k">TRAIL</span>` + frames.map((f, i) => {
+      const n = f.node, cur = i === cursor, ahead = i > cursor;
+      return `<button class="st-bc-crumb${cur ? ' current' : ''}${ahead ? ' ahead' : ''}" data-i="${i}" title="${esc(n.title || n.label)}">
         <span class="st-dot" style="background:${colorFor(n.hue)}"></span>${esc(clip(n.label, 26))}</button>`
-        + (i < trail.length - 1 ? `<span class="st-bc-sep">›</span>` : '');
+        + (i < frames.length - 1 ? `<span class="st-bc-sep">›</span>` : '');
     }).join('');
-    bc.querySelectorAll('.st-bc-crumb').forEach(b => b.onclick = () => { trail = trail.slice(0, +b.dataset.i + 1); selected = null; expandedBands.clear(); render(); });
+    // Jump to any crumb WITHOUT dropping the others — successors stay so you can step forward
+    // again — and restore that frame's own connector/hairball state instead of clearing it.
+    bc.querySelectorAll('.st-bc-crumb').forEach(b => b.onclick = () => { stopPan(); snapshot(); loadFrame(+b.dataset.i); render(); });
   }
 
   // Connector bands the focal dataset actually has (shared by both layouts).
@@ -193,19 +384,86 @@ export function openStoryline(host, seed, ctx) {
     ].filter(b => b.list.length);
   }
 
+  // ── Spine "dataset boxes" — back to the original spine grammar (separate boxes on the trunk,
+  //    joined by edges) rather than one monolithic card. DATASET title → ABSTRACT → one boxed
+  //    section per connector property, each its own node. Authors & keywords (usually long)
+  //    render as STANDARD-SIZE SCROLLABLE tables; energy stays as tiles; observables are tiles
+  //    when few (≤ TILE_MAX) and a table when many. Every row / tile is a clickable CONNECTOR —
+  //    picking one blooms its connected datasets off that section's own box. ──
+  const TILE_MAX = 6;   // observables at or below this render as tiles; above it, a table
+  function connRow(c, prop) {
+    const sel = selected && selected.prop === prop && selected.value === c.value;
+    const q = sel ? '' : connClass(c.members);   // selection styling wins; don't flag while picked
+    const style = q === 'red' ? ` style="background:${redFill(c.members.length)}"` : '';
+    return `<button class="sp-row sp-cprop-${prop}${sel ? ' sel' : ''}${q ? ' sp-row-' + q : ''}"${style} data-prop="${prop}" data-value="${esc(c.value)}" title="${esc(c.value)}${connHint(q)}">
+      <span class="sp-row-g">${GLYPH[prop]}</span>
+      <span class="sp-row-v">${esc(c.value)}</span>
+      <span class="sp-row-n">${c.members.length}</span>
+    </button>`;
+  }
+  function connTile(c, prop) {
+    const sel = selected && selected.prop === prop && selected.value === c.value;
+    const q = sel ? '' : connClass(c.members);
+    const style = q === 'red' ? ` style="background:${redFill(c.members.length)}"` : '';
+    return `<button class="sp-val sp-cprop-${prop}${sel ? ' sel' : ''}${q ? ' sp-val-' + q : ''}"${style} data-prop="${prop}" data-value="${esc(c.value)}" title="${esc(c.value)}${connHint(q)}">
+      <span class="sp-val-g">${GLYPH[prop]}</span>
+      <span class="sp-val-v">${esc(clip(c.value, 24))}</span>
+      <span class="sp-val-n">${c.members.length}</span>
+    </button>`;
+  }
+  // TITLE content — kicker + headline. NOTE: this returns the INNER content only; the box chrome
+  // (background/border/shadow) is carried by the outer .sp-node the caller places it in via
+  // placeBox() — wrapping it again here was the bug behind the double-nested "2 layers" look.
+  function titleBoxHTML(n) {
+    return `<div class="sp-card-kicker">
+        <span class="sp-card-dot" style="background:${colorFor(n.hue)}"></span>
+        <span>${esc(KG.domains[n.domain]?.label || '')} › ${esc(KG.clusters[n.cluster]?.label || '')}</span>
+        <span class="sp-card-deg">deg ${degree[n.id] || 0}</span>
+      </div>
+      <div class="sp-card-title">${esc(n.title || n.label)}</div>`;
+  }
+  // ABSTRACT content — text + cited DOIs + link. Inner content only (see titleBoxHTML note).
+  function abstractBoxHTML(n) {
+    const doiTxt = d => d.replace(/^https?:\/\/(dx\.)?doi\.org\//, '');
+    return `<div class="sp-sec-h"><span class="sp-sec-k">Abstract</span></div>
+      ${n.description ? `<div class="sp-abstract">${esc(n.description)}</div>` : `<div class="sp-empty">No abstract provided.</div>`}
+      ${n.dois?.length ? `<div class="sp-dois">${n.dois.map(d => `<a class="st-det-link" href="${esc(d)}" target="_blank" rel="noopener">${esc(doiTxt(d))} ↗</a>`).join('')}</div>` : ''}
+      ${n.uri ? `<a class="st-det-open" href="${esc(n.uri)}" target="_blank" rel="noopener">Open dataset ↗</a>` : ''}`;
+  }
+  // Connector-property content (Authors / Keywords / Energy √s / Observables) — header + table/tiles.
+  // Every section's OUTER node is the plain full-weight .sp-box. Authors' table and the tile bands
+  // render flat/bare inside it; keyword and observable-as-table nest a second, lightened inner box
+  // (.sp-table-light) — observable only falls back to that past TILE_MAX, keyword always uses it.
+  function bandBoxHTML(band) {
+    const list = band.list.slice().sort((p, q) => p.members.length - q.members.length);  // rarest first
+    const rows = () => list.map(c => connRow(c, band.prop)).join('');
+    const tiles = () => `<div class="sp-tiles">${list.map(c => connTile(c, band.prop)).join('')}</div>`;
+    let body;
+    if (band.prop === 'author') body = `<div class="sp-table">${rows()}</div>`;               // flat — outer box is the only frame
+    else if (band.prop === 'keyword') body = `<div class="sp-table-light">${rows()}</div>`;    // inner box, lightened — same as observables-as-table
+    else if (band.prop === 'energy') body = tiles();
+    else body = list.length <= TILE_MAX ? tiles() : `<div class="sp-table-light">${rows()}</div>`;   // observables: tiles, or a lightened inner table
+    return `<div class="sp-sec-h"><span class="sp-sec-k">${esc(band.label)}</span><span class="sp-sec-n">${band.list.length}</span></div>
+      ${body}`;
+  }
+
   function render() {
     renderBreadcrumb();
     overlay.querySelectorAll('.st-layout-toggle button')
       .forEach(b => b.classList.toggle('active', b.dataset.layout === layout));
+    zoomCtl.hidden = layout !== 'spine';   // zoom controls belong to the spine only
+    flowwrap.classList.toggle('sp-pannable', layout === 'spine');   // grab cursor in the spine
     if (layout === 'spine') renderSpine(); else renderGrid();
   }
   overlay.querySelectorAll('.st-layout-toggle button').forEach(b => b.onclick = () => {
     layout = b.dataset.layout; render();
+    stopPan();
     flowwrap.scrollTop = 0; flowwrap.scrollLeft = 0;
   });
 
   function renderGrid() {
-    const focal = trail[trail.length - 1];
+    flow.style.width = flow.style.height = flow.style.minWidth = flow.style.margin = '';   // drop any spine-zoom footprint
+    const focal = frames[cursor].node;
     const cl = KG.clusters[focal.cluster];
     const bands = bandsOf(focal);
 
@@ -255,13 +513,8 @@ export function openStoryline(host, seed, ctx) {
       expandedBands.has(p) ? expandedBands.delete(p) : expandedBands.add(p);
       render();
     });
-    // click a dataset tile → drill in (new focal, reset selection + band expansion)
-    flow.querySelectorAll('.st-dstile').forEach(t => t.onclick = () => {
-      const n = nodeById[t.dataset.eid];
-      if (!n) return;
-      trail.push(n); selected = null; expandedBands.clear(); render();
-      flowwrap.scrollTop = 0; flowwrap.scrollLeft = 0;
-    });
+    // click a dataset tile → drill in (new frame; current view is kept in the breadcrumb)
+    flow.querySelectorAll('.st-dstile').forEach(t => t.onclick = () => drillInto(nodeById[t.dataset.eid]));
     // expand/collapse a connected tile's record in place.
     // stopPropagation keeps the connected-tile drill-in from also firing.
     flow.querySelectorAll('.st-tile-toggle').forEach(b => b.onclick = ev => {
@@ -276,27 +529,32 @@ export function openStoryline(host, seed, ctx) {
   }
 
   // ════════════════════════════════════════════════════════════════
-  //  SPINE layout — a vertical narrative trunk of hub nodes, each fanning out to ALL of
+  //  SPINE layout — a vertical narrative trunk of boxed sections, each fanning out to ALL of
   //  its values (nothing collapsed). Nodes are absolutely-positioned HTML (so the focal
   //  tile stays a real tile) over an SVG layer that draws the trunk + spokes.
-  //     TOPIC → DATASET(+abstract) → AUTHORS → KEYWORDS → ENERGY → OBSERVABLES → CONNECTED
+  //     TITLE(+domain›cluster) → ABSTRACT → AUTHORS → KEYWORDS → ENERGY → OBSERVABLES
+  //  Picking a connector value blooms ITS connected datasets into a small force-directed
+  //  hairball (adaptive-L2 style) hanging off that value, on its own side of the trunk.
   // ════════════════════════════════════════════════════════════════
   function renderSpine() {
-    const focal = trail[trail.length - 1];
-    const cl = KG.clusters[focal.cluster];
+    // Keep the viewport where it is across a re-render. Replacing flow.innerHTML momentarily
+    // collapses the scroll height, which would otherwise snap the pane back to the top when a
+    // connector is picked. Callers that want a reset (drill-in, layout toggle) zero it after.
+    const keepTop = flowwrap.scrollTop, keepLeft = flowwrap.scrollLeft;
+    const focal = frames[cursor].node;
     const bands = bandsOf(focal);
 
-    const PAD = 20, VAL_W = 200, VAL_H = 26, ROW_H = 34, GAP_X = 34;
-    const HUB_H = 34, V_GAP = 34;
+    const PAD = 20, V_GAP = 34, GAP_X = 44;
     // Trunk (y-axis) centred in the available canvas width, so the spine sits in the middle.
     const AREA = Math.max(560, (flowwrap.clientWidth || 900) - 48);
     const TRUNK_X = Math.round(AREA / 2);
+    const CARD_W = Math.min(600, AREA - 40);   // the dataset card's fixed, readable width
 
     flow.innerHTML = `<div class="st-spine"><svg class="sp-edges"></svg></div>`;
     const spine = flow.querySelector('.st-spine');
     const svg = flow.querySelector('.sp-edges');
 
-    let maxRight = 0;
+    let maxRight = 0, minLeft = PAD;
     const edges = [];
     const add = (cls, x, w, html, data) => {
       const el = document.createElement('div');
@@ -306,116 +564,213 @@ export function openStoryline(host, seed, ctx) {
       if (data) Object.assign(el.dataset, data);
       spine.appendChild(el);
       maxRight = Math.max(maxRight, x + w);
+      minLeft = Math.min(minLeft, x);
       return el;
     };
-    // fan ALL values of a hub out to alternating left/right columns
-    const fan = (items, hubBottom, mk) => {
-      const top = hubBottom + 16;
-      items.forEach((it, i) => {
-        const right = i % 2 === 1, row = Math.floor(i / 2);
-        const x = right ? TRUNK_X + GAP_X : TRUNK_X - GAP_X - VAL_W;
-        const yy = top + row * ROW_H;
-        mk(it, x, yy);
-        edges.push({ x1: TRUNK_X, y1: hubBottom, x2: right ? x : x + VAL_W, y2: yy + VAL_H / 2, cls: 'sp-spoke' });
-      });
-      const rows = Math.ceil(items.length / 2);
-      return rows ? top + (rows - 1) * ROW_H + VAL_H : hubBottom;
-    };
-
     let y = PAD;
-    // TOPIC
-    const topicW = 300;
-    const topicEl = add('sp-topic', TRUNK_X - topicW / 2, topicW,
-      `<div class="sp-k">TOPIC</div><div class="sp-topic-l">${esc(cl?.label || '')}</div><div class="sp-topic-s">${esc(KG.domains[focal.domain]?.label || '')}</div>`);
-    topicEl.style.top = y + 'px';
-    let prevBottom = y + topicEl.offsetHeight;
-    y = prevBottom + V_GAP;
-
-    // DATASET — unboxed text block, centred on the trunk (trunk enters top/exits bottom)
-    const FOCAL_W = Math.min(720, AREA - 40);
-    const focalEl = add('sp-focal', TRUNK_X - FOCAL_W / 2, FOCAL_W, focalBlockHTML(focal));
-    focalEl.style.top = y + 'px';
-    edges.push({ x1: TRUNK_X, y1: prevBottom, x2: TRUNK_X, y2: y, cls: 'sp-trunk' });
-    prevBottom = y + focalEl.offsetHeight;
-    y = prevBottom + V_GAP;
-
-    // CONNECTOR HUBS — every value fanned out, none collapsed
+    // TITLE → ABSTRACT → one boxed section per connector property — SEPARATE nodes on the
+    // trunk (matching the original spine grammar), each joined by a trunk edge. TITLE leads (no
+    // standalone TOPIC node — its domain›cluster info already lives in the title box's kicker),
+    // so the trunk's first edge is drawn INTO title from whatever the caller placed before it.
+    const boxX = TRUNK_X - CARD_W / 2, boxRight = boxX + CARD_W;
+    let prevBottom = null;   // null until the first box is placed — no trunk edge above the first node
+    const placeBox = (cls, html) => {
+      const el = add(cls, boxX, CARD_W, html);
+      el.style.top = y + 'px';
+      if (prevBottom !== null) edges.push({ x1: TRUNK_X, y1: prevBottom, x2: TRUNK_X, y2: y, cls: 'sp-trunk' });
+      prevBottom = y + el.offsetHeight;
+      y = prevBottom + V_GAP;
+      return el;
+    };
+    const titleEl = placeBox('sp-box sp-box-title', titleBoxHTML(focal));
+    titleEl.style.borderLeftColor = colorFor(focal.hue);   // the kicker's accent rule
+    placeBox('sp-box', abstractBoxHTML(focal));
+    // Track the box + on-screen span of whichever band the selected connector belongs to, so the
+    // bloom can anchor its spoke to THAT box specifically (not the whole stack).
+    let selBox = null;   // { top, bottom }
+    const groupTop = y;   // top of the FIRST band box — marks where "connectors" begin
     bands.forEach(b => {
-      const hubW = 190, hubY = y;
-      const hubEl = add('sp-hub sp-cprop-' + b.prop, TRUNK_X - hubW / 2, hubW,
-        `<span class="sp-hub-g">${GLYPH[b.prop]}</span><span class="sp-hub-l">${esc(b.label.toUpperCase())}</span><span class="sp-hub-n">${b.list.length}</span>`);
-      hubEl.style.top = hubY + 'px';
-      edges.push({ x1: TRUNK_X, y1: prevBottom, x2: TRUNK_X, y2: hubY, cls: 'sp-trunk' });
-      const hubBottom = hubY + HUB_H;
-      const list = b.list.slice().sort((p, q) => p.members.length - q.members.length);
-      const fanBottom = fan(list, hubBottom, (c, x, yy) => {
-        const sel = selected && selected.prop === b.prop && selected.value === c.value;
-        const el = add(`sp-val sp-cprop-${b.prop}${sel ? ' sel' : ''}`, x, VAL_W,
-          `<span class="sp-val-g">${GLYPH[b.prop]}</span><span class="sp-val-v" title="${esc(c.value)}">${esc(clip(c.value, 24))}</span><span class="sp-val-n">${c.members.length}</span>`,
-          { prop: b.prop, value: c.value });
-        el.style.top = yy + 'px';
-      });
-      prevBottom = hubBottom;
-      y = fanBottom + V_GAP;
+      const el = placeBox('sp-box', bandBoxHTML(b));
+      if (selected && selected.prop === b.prop) {
+        selBox = { el, top: prevBottom - el.offsetHeight, bottom: prevBottom };
+      }
     });
+    let bottom = prevBottom;
+    // A single dashed outline drawn BEHIND Authors/Keywords/Energy/Observables (whichever the
+    // focal dataset actually has), marking them as a set: these are the sections that can branch
+    // into other datasets, unlike the title/abstract above.
+    if (bands.length) {
+      const GROUP_PAD = 10;
+      edges.push({ cls: 'sp-conn-group', x1: boxX - GROUP_PAD, y1: groupTop - GROUP_PAD, x2: boxRight + GROUP_PAD, y2: bottom + GROUP_PAD });
+      minLeft = Math.min(minLeft, boxX - GROUP_PAD);
+      maxRight = Math.max(maxRight, boxRight + GROUP_PAD);
+    }
 
-    // CONNECTED DATASETS
-    const chubW = 230, chubY = y;
-    const chubEl = add('sp-hub sp-hub-conn', TRUNK_X - chubW / 2, chubW,
-      `<span class="sp-hub-l">CONNECTED DATASETS</span>`);
-    chubEl.style.top = chubY + 'px';
-    edges.push({ x1: TRUNK_X, y1: prevBottom, x2: TRUNK_X, y2: chubY, cls: 'sp-trunk' });
-    const chubBottom = chubY + HUB_H;
-    let bottom = chubBottom;
-    if (!selected) {
-      const p = add('sp-prompt', TRUNK_X - 190, 380, 'Select a connector above to fan out its connected datasets.');
-      p.style.top = (chubBottom + 16) + 'px';
-      bottom = chubBottom + 16 + p.offsetHeight;
-    } else {
+    // CONNECTED DATASETS — picking any connector (a table row or a tile) blooms ITS connected
+    // datasets into a force-directed hairball HOUSED in a rounded rectangle, hanging off the RIGHT
+    // of that connector's own box. The spoke leaves the box edge level with the picked row's box;
+    // member↔member threads inside stay hidden until a node is hovered.
+    if (selected && selBox) {
       const band = bands.find(b => b.prop === selected.prop);
       const c = band?.list.find(x => x.value === selected.value);
-      const members = c ? c.members : [];
-      const shown = members.slice(0, MEMBER_CAP);
-      bottom = fan(shown, chubBottom, (m, x, yy) => {
-        const el = add('sp-val sp-conn', x, VAL_W,
-          `<span class="sp-val-dot" style="background:${colorFor(m.hue)}"></span><span class="sp-val-v" title="${esc(m.title || m.label)}">${esc(clip(m.title || m.label, 24))}</span><span class="sp-val-n">${degree[m.id] || 0}</span>`,
-          { eid: m.id });
-        el.style.top = yy + 'px';
-      });
-      if (!members.length) {
-        const p = add('sp-prompt', TRUNK_X - 190, 380, `No other dataset shares this ${selected.prop}.`);
-        p.style.top = (chubBottom + 16) + 'px';
-        bottom = chubBottom + 16 + p.offsetHeight;
-      } else if (members.length > MEMBER_CAP) {
-        const p = add('sp-prompt', TRUNK_X - 190, 380, `Showing the ${MEMBER_CAP} most-connected of ${members.length}.`);
-        p.style.top = (bottom + 12) + 'px';
-        bottom = bottom + 12 + p.offsetHeight;
+      const all = c ? c.members : [];
+      const shown = all.slice(0, MEMBER_CAP);
+      const sx = boxRight;
+      let spokeY = (selBox.top + selBox.bottom) / 2;
+      spokeY = Math.max(selBox.top + 14, Math.min(spokeY, selBox.bottom - 14));
+      if (!shown.length) {
+        const p = add('sp-prompt', sx + GAP_X, 380, `No other dataset shares this ${selected.prop}.`);
+        p.style.top = spokeY + 'px';
+        edges.push({ x1: sx, y1: spokeY, x2: sx + GAP_X, y2: spokeY, cls: 'sp-spoke', horiz: true });
+        maxRight = Math.max(maxRight, sx + GAP_X + 380);
+        bottom = Math.max(bottom, spokeY + 30);
+      } else {
+        // ── build the ego graph: member nodes + real KG edges among the shown members ──
+        const LABEL_W = 108, LABEL_H = 28;   // two-line title footprint under each node
+        const nodeR = n => Math.max(6, Math.min(15, 5 + Math.sqrt(degree[n.id] || 0) * 1.1));
+        const idSet = new Set(shown.map(m => m.id));
+        const simNodes = shown.map(m => ({ id: m.id, hue: m.hue, r: nodeR(m), title: m.title || m.label }));
+        const simIndex = new Map(simNodes.map(sn => [sn.id, sn]));
+        const seen = new Set();
+        const simLinks = [];
+        shown.forEach(m => (adjacency.get(m.id) || []).forEach(e => {
+          if (!idSet.has(e.id)) return;
+          const key = m.id < e.id ? m.id + '|' + e.id : e.id + '|' + m.id;
+          if (seen.has(key)) return;
+          seen.add(key);
+          simLinks.push({ source: m.id, target: e.id });
+        }));
+        // ── settle a spread-out force layout synchronously (no animation) around the origin.
+        // Collision reserves the label footprint so the two-line titles below each node clear ──
+        d3.forceSimulation(simNodes)
+          .force('link', d3.forceLink(simLinks).id(d => d.id).distance(96).strength(0.28))
+          .force('charge', d3.forceManyBody().strength(-320))
+          .force('collide', d3.forceCollide().radius(d => Math.max(d.r + 10, LABEL_W / 2 + 4)).iterations(8))
+          .force('x', d3.forceX(0).strength(0.03))
+          .force('y', d3.forceY(0).strength(0.04))
+          .stop().tick(320);
+        // ── translate the settled blob so it hangs off the card's right edge, centred on the spoke.
+        // The bbox includes each node's label footprint so nothing clips at the edges ──
+        let bMinX = Infinity, bMaxX = -Infinity, bMinY = Infinity, bMaxY = -Infinity;
+        simNodes.forEach(n => {
+          const half = Math.max(n.r, LABEL_W / 2);
+          bMinX = Math.min(bMinX, n.x - half); bMaxX = Math.max(bMaxX, n.x + half);
+          bMinY = Math.min(bMinY, n.y - n.r); bMaxY = Math.max(bMaxY, n.y + n.r + LABEL_H);
+        });
+        const tx = (sx + GAP_X) - bMinX;
+        let ty = spokeY - (bMinY + bMaxY) / 2;
+        if (bMinY + ty < selBox.top) ty = selBox.top - bMinY;   // don't let the bloom ride above its box
+        simNodes.forEach(n => { n.x += tx; n.y += ty; });
+        // ── the members are HOUSED in a rectangle, and the connector's thread lands on the box
+        //    (not on one node): every member shares this connector, so the container IS the link.
+        //    Push the box FIRST so it paints behind the threads. ──
+        const RECT_PAD = 16;
+        const rL = bMinX + tx - RECT_PAD, rT = bMinY + ty - RECT_PAD;
+        const rR = bMaxX + tx + RECT_PAD, rB = bMaxY + ty + RECT_PAD;
+        edges.push({ cls: 'sp-rect', x1: rL, y1: rT, x2: rR, y2: rB });
+        edges.push({ x1: sx, y1: spokeY, x2: rL, y2: (rT + rB) / 2, cls: 'sp-spoke', horiz: true });
+        maxRight = Math.max(maxRight, rR); bottom = Math.max(bottom, rB);
+        // ── member↔member threads (the hairball). Tagged with their endpoints and HIDDEN by
+        //    default (see .sp-gedge CSS); hovering a node reveals only that node's threads ──
+        simLinks.forEach(l => {
+          const a = simIndex.get(typeof l.source === 'object' ? l.source.id : l.source);
+          const b = simIndex.get(typeof l.target === 'object' ? l.target.id : l.target);
+          if (a && b) edges.push({ x1: a.x, y1: a.y, x2: b.x, y2: b.y, cls: 'sp-gedge', a: a.id, b: b.id });
+        });
+        // ── node discs (domain-coloured, degree-sized) with a two-line title label below;
+        //    both are clickable to drill in ──
+        simNodes.forEach(n => {
+          const d = n.r * 2;
+          const el = add('sp-gnode', n.x - n.r, d, '', { eid: n.id });
+          el.style.top = (n.y - n.r) + 'px';
+          el.style.height = d + 'px';
+          el.style.background = colorFor(n.hue);
+          el.style.borderColor = colorFor(n.hue, 0.42, 0.1);
+          el.title = n.title;
+          const lab = add('sp-gnode-l', n.x - LABEL_W / 2, LABEL_W, esc(n.title), { eid: n.id });
+          lab.style.top = (n.y + n.r + 3) + 'px';
+          lab.title = n.title;
+          bottom = Math.max(bottom, n.y + n.r + LABEL_H);
+        });
+        if (all.length > MEMBER_CAP) {
+          const p = add('sp-prompt', rL, Math.max(180, rR - rL),
+            `＋${all.length - MEMBER_CAP} more not shown (top ${MEMBER_CAP} by degree)`);
+          p.style.top = (rB + 8) + 'px';
+          bottom = Math.max(bottom, rB + 8 + p.offsetHeight);
+        }
       }
     }
 
-    // size the canvas + paint the edges beneath the nodes. Width = the area (so the
-    // centred trunk lands in the middle of the pane); grows only if content overflows.
-    const W = Math.max(AREA, maxRight + PAD), H = bottom + PAD;
+    // A left-side branch can push nodes past the left edge (negative x). Slide the whole
+    // spine right by that overflow so it's all visible; the pane scrolls for extra width.
+    const dx = minLeft < PAD ? PAD - minLeft : 0;
+    if (dx) {
+      spine.querySelectorAll('.sp-node').forEach(el => { el.style.left = (parseFloat(el.style.left) + dx) + 'px'; });
+      edges.forEach(e => { e.x1 += dx; e.x2 += dx; });
+    }
+    // size the canvas + paint the edges beneath the nodes.
+    const W = Math.max(AREA, maxRight + dx + PAD), H = bottom + PAD;
     spine.style.width = W + 'px'; spine.style.height = H + 'px';
     svg.setAttribute('width', W); svg.setAttribute('height', H);
-    svg.innerHTML = edges.map(e => e.cls === 'sp-trunk'
-      ? `<line class="sp-trunk" x1="${e.x1}" y1="${e.y1}" x2="${e.x2}" y2="${e.y2}"/>`
-      : `<path class="sp-spoke" d="M${e.x1},${e.y1} C${e.x1},${(e.y1 + e.y2) / 2} ${e.x2},${(e.y1 + e.y2) / 2} ${e.x2},${e.y2}"/>`).join('')
+    svg.innerHTML = edges.map(e => {
+      if (e.cls === 'sp-rect') return `<rect class="sp-rect" x="${e.x1}" y="${e.y1}" width="${e.x2 - e.x1}" height="${e.y2 - e.y1}" rx="14"/>`;
+      if (e.cls === 'sp-conn-group') return `<rect class="sp-conn-group" x="${e.x1}" y="${e.y1}" width="${e.x2 - e.x1}" height="${e.y2 - e.y1}" rx="20"/>`;
+      if (e.cls === 'sp-trunk') return `<line class="sp-trunk" x1="${e.x1}" y1="${e.y1}" x2="${e.x2}" y2="${e.y2}"/>`;
+      if (e.cls === 'sp-gedge') return `<line class="sp-gedge" data-a="${esc(e.a)}" data-b="${esc(e.b)}" x1="${e.x1}" y1="${e.y1}" x2="${e.x2}" y2="${e.y2}"/>`;
+      const d = e.horiz   // branch spokes curve horizontally; hub→value spokes curve vertically
+        ? `M${e.x1},${e.y1} C${(e.x1 + e.x2) / 2},${e.y1} ${(e.x1 + e.x2) / 2},${e.y2} ${e.x2},${e.y2}`
+        : `M${e.x1},${e.y1} C${e.x1},${(e.y1 + e.y2) / 2} ${e.x2},${(e.y1 + e.y2) / 2} ${e.x2},${e.y2}`;
+      return `<path class="sp-spoke" d="${d}"/>`;
+    }).join('')
       + edges.filter(e => e.cls === 'sp-trunk').map(e => `<circle class="sp-joint" cx="${e.x2}" cy="${e.y2}" r="3"/>`).join('');
 
+    // remember the natural size and re-apply the current zoom (scales .st-spine, resizes .st-flow)
+    spineW = W; spineH = H;
+    applyZoom();
+    // restore the scroll position captured before the rebuild (see top of renderSpine)
+    flowwrap.scrollTop = keepTop; flowwrap.scrollLeft = keepLeft;
+
     // interactions
-    spine.querySelectorAll('.sp-val[data-prop]').forEach(el => el.onclick = () => {
+    spine.querySelectorAll('[data-prop][data-value]').forEach(el => el.onclick = e => {
+      e.stopPropagation();
       const prop = el.dataset.prop, value = el.dataset.value;
-      selected = (selected && selected.prop === prop && selected.value === value) ? null : { prop, value };
+      const turningOn = !(selected && selected.prop === prop && selected.value === value);
+      selected = turningOn ? { prop, value } : null;
+      pendingBloomPan = turningOn;   // only glide the camera on SELECT — a deselect leaves it be
       render();
     });
-    spine.querySelectorAll('.sp-val[data-eid]').forEach(el => el.onclick = () => {
-      const n = nodeById[el.dataset.eid];
-      if (!n) return;
-      trail.push(n); selected = null; expandedBands.clear(); render();
-      flowwrap.scrollTop = 0; flowwrap.scrollLeft = 0;
+    spine.querySelectorAll('.sp-node[data-eid]').forEach(el => el.onclick = () => drillInto(nodeById[el.dataset.eid]));
+    spine.querySelectorAll('.sp-box a').forEach(a => a.onclick = ev => ev.stopPropagation());
+    // member threads are hidden until you hover a node — then only that node's threads light up.
+    const edgeByNode = new Map();
+    svg.querySelectorAll('.sp-gedge').forEach(ln => [ln.dataset.a, ln.dataset.b].forEach(id => {
+      if (!edgeByNode.has(id)) edgeByNode.set(id, []);
+      edgeByNode.get(id).push(ln);
+    }));
+    spine.querySelectorAll('.sp-gnode, .sp-gnode-l').forEach(el => {
+      const inc = edgeByNode.get(el.dataset.eid) || [];
+      el.addEventListener('mouseenter', () => inc.forEach(ln => ln.classList.add('show')));
+      el.addEventListener('mouseleave', () => inc.forEach(ln => ln.classList.remove('show')));
     });
-    spine.querySelectorAll('.sp-focal').forEach(d => d.onclick = ev => ev.stopPropagation());
+
+    // If this render was triggered by SELECTING a connector, glide the camera to frame whatever
+    // just bloomed — the housed cluster of member nodes, or the "no other dataset shares this"
+    // prompt when it's empty. Runs last so the DOM (and its layout) already reflects the new pick.
+    if (pendingBloomPan) {
+      pendingBloomPan = false;
+      const gnodes = spine.querySelectorAll('.sp-gnode');
+      if (gnodes.length) {
+        let l = Infinity, t = Infinity, r = -Infinity, b = -Infinity;
+        gnodes.forEach(n => {
+          const rc = n.getBoundingClientRect();
+          l = Math.min(l, rc.left); t = Math.min(t, rc.top);
+          r = Math.max(r, rc.right); b = Math.max(b, rc.bottom);
+        });
+        panToRect({ left: l, top: t, width: r - l, height: b - t });
+      } else {
+        panToEl(spine.querySelector('.sp-prompt'));
+      }
+    }
   }
 
   render();

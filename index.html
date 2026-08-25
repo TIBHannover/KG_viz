@@ -978,10 +978,19 @@
     .st-bc-crumb { display: inline-flex; align-items: center; gap: 5px; background: transparent; border: 1px solid transparent; color: var(--ink-2); font-family: inherit; font-size: 11px; padding: 3px 8px; border-radius: 6px; cursor: pointer; }
     .st-bc-crumb:hover { background: var(--bg); border-color: var(--line); color: var(--ink); }
     .st-bc-crumb.current { color: var(--amber); border-color: var(--amber); background: var(--amber-soft); }
+    /* forward history: crumbs ahead of the current one are kept (not dropped) so you can step
+       back out to where you were — dimmed to read as "ahead, but still reachable". */
+    .st-bc-crumb.ahead { opacity: 0.5; border-style: dashed; border-color: var(--line); }
+    .st-bc-crumb.ahead:hover { opacity: 1; }
     .st-bc-sep { color: var(--ink-3); font-size: 13px; }
 
     /* flow surface */
-    .st-flowwrap { flex: 1; min-height: 0; overflow: auto; padding: 18px 24px 32px; }
+    /* overflow-x is hidden (no horizontal scrollbar) but the pane is still a scroll container,
+       so drag-to-pan can move it horizontally programmatically; vertical keeps its scrollbar. */
+    .st-flowwrap { flex: 1; min-height: 0; overflow-x: hidden; overflow-y: auto; padding: 18px 24px 32px; }
+    .st-flowwrap.sp-pannable { cursor: grab; }                 /* spine: hint that the canvas drags */
+    .st-flowwrap.sp-grabbing { cursor: grabbing; user-select: none; }
+    .st-flowwrap.sp-grabbing * { cursor: grabbing !important; }
     .st-flow { min-width: 100%; }
     /* focal dataset — unboxed editorial block (kicker · title · abstract · DOIs · link) */
     .st-focal {
@@ -1005,6 +1014,23 @@
     .st-layout-toggle button:hover { color: var(--ink-2); }
     .st-layout-toggle button.active { background: var(--bg-3); color: var(--amber); }
     .st-spine { position: relative; }
+    /* floating spine zoom control (pinned bottom-right over the scroll pane) */
+    .sp-zoom {
+      position: absolute; right: 18px; bottom: 18px; z-index: 31;
+      display: inline-flex; align-items: stretch; gap: 0;
+      background: var(--bg); border: 1px solid var(--line-2); border-radius: 8px;
+      box-shadow: var(--shadow); overflow: hidden;
+    }
+    .sp-zoom[hidden] { display: none; }
+    .sp-zoom button {
+      background: transparent; border: 0; border-left: 1px solid var(--line);
+      color: var(--ink-2); font-family: "JetBrains Mono", monospace; font-size: 13px;
+      padding: 6px 10px; cursor: pointer; line-height: 1; transition: background 0.12s, color 0.12s;
+    }
+    .sp-zoom button:first-child { border-left: 0; }
+    .sp-zoom button:hover { background: var(--bg-3); color: var(--amber); }
+    .sp-zoom .sp-zoom-pct { font-size: 11px; min-width: 46px; color: var(--ink-3); }
+    .sp-zoom button[data-z="fit"] { font-size: 11px; }
     .sp-edges { position: absolute; left: 0; top: 0; pointer-events: none; }
     .sp-trunk { stroke: var(--line-2); stroke-width: 1.6; }
     .sp-spoke { fill: none; stroke: var(--line-2); stroke-width: 1.1; stroke-opacity: 0.8; }
@@ -1023,7 +1049,6 @@
       font-family: "JetBrains Mono", monospace; font-size: 10px; letter-spacing: 0.1em; color: var(--ink-2);
     }
     .sp-hub-n { font-size: 9px; color: var(--ink-3); border: 1px solid var(--line-2); border-radius: 999px; padding: 0 6px; }
-    .sp-hub-conn { border-color: var(--amber); color: var(--amber); }
     .sp-val {
       height: 26px; display: flex; align-items: center; gap: 6px; cursor: pointer;
       background: var(--bg); border: 1px solid var(--line); border-radius: 999px;
@@ -1031,6 +1056,15 @@
       transition: border-color 0.12s, background 0.12s, color 0.12s;
     }
     .sp-val:hover { border-color: var(--line-2); background: var(--bg-2); }
+    /* signal-quality flags. RED = very broad connector (>500 shared datasets): NO outline,
+       white text; the fill (deepening with the connection count, max at 2000) is set inline in
+       JS. GREY = dead-end (0 shared). Selection (.sel, declared after) overrides — and flagged
+       connectors are not marked while selected. */
+    .sp-val-red { border-color: transparent; color: #fff; }
+    .sp-val-red .sp-val-g, .sp-val-red .sp-val-v, .sp-val-red .sp-val-n { color: #fff; }
+    .sp-val-red:hover { border-color: transparent; filter: brightness(1.08); }
+    .sp-val-dead { background: var(--bg-3); border-color: var(--line); color: var(--ink-3); opacity: 0.75; }
+    .sp-val-dead .sp-val-g, .sp-val-dead .sp-val-n { color: var(--ink-3); }
     .sp-val.sel { border-color: var(--amber); background: var(--amber-soft); color: var(--amber); }
     .sp-val-g { font-family: "JetBrains Mono", monospace; font-size: 11px; flex-shrink: 0; }
     .sp-val-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
@@ -1042,6 +1076,86 @@
     .sp-cprop-energy .sp-val-g, .sp-cprop-energy .sp-hub-g { color: var(--amber); }
     .sp-cprop-observable .sp-val-g, .sp-cprop-observable .sp-hub-g { color: oklch(0.55 0.16 150); }
     .sp-prompt { font-size: 11px; color: var(--ink-3); font-style: italic; text-align: center; }
+    /* connected datasets: member nodes HOUSED in a rounded rectangle; the connector's thread
+       lands on the box. Member↔member threads are hidden until a node is hovered (JS adds .show). */
+    .sp-rect { fill: var(--bg-2); stroke: var(--line-2); stroke-width: 1; }
+    /* single outline spanning Authors/Keywords/Energy/Observables as a set — marks them as the
+       sections that can branch into other datasets (title/abstract, above, cannot). */
+    .sp-conn-group { fill: none; stroke: var(--amber); stroke-width: 1.3; stroke-dasharray: 5 4; opacity: 0.55; }
+    .sp-gedge { stroke: var(--ink-3); stroke-width: 0.9; opacity: 0; transition: opacity 0.12s; }
+    .sp-gedge.show { opacity: 0.55; }
+    .sp-gnode {
+      border-radius: 50%; border: 1.5px solid; box-sizing: border-box; cursor: pointer;
+      transition: transform 0.1s ease; transform-origin: center;
+    }
+    .sp-gnode:hover { transform: scale(1.28); z-index: 6; box-shadow: 0 2px 10px rgba(20,30,45,0.22); }
+    .sp-gnode-l {
+      text-align: center; font-size: 10.5px; line-height: 1.25; color: var(--ink-2); cursor: pointer;
+      display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+    }
+    .sp-gnode-l:hover { color: var(--ink); }
+    /* ── Spine dataset boxes: SEPARATE nodes on the trunk (title → abstract → one box per
+       connector property), each joined by its own trunk edge — matching the original spine
+       grammar rather than one monolithic card. Authors & keywords render as standard-size
+       SCROLLABLE tables; energy (and observables ≤6) as tiles; many observables as a table.
+       Every row / tile is a connector. ── */
+    .sp-box {
+      background: var(--bg); border: 1px solid var(--line-2); border-radius: 14px;
+      box-shadow: var(--shadow); padding: 14px 16px; text-align: left;
+      display: flex; flex-direction: column; gap: 7px;
+    }
+    .sp-box-title { border-left: 3px solid var(--line-2); }
+    .sp-card-kicker { display: flex; align-items: center; gap: 8px; font-family: "JetBrains Mono", monospace; font-size: 10px; color: var(--ink-3); }
+    .sp-card-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+    .sp-card-deg { border: 1px solid var(--line); border-radius: 999px; padding: 0 6px; }
+    .sp-card-title { font-size: 17px; font-weight: 600; line-height: 1.3; color: var(--ink); }
+    .sp-sec-h { display: flex; align-items: center; gap: 8px; }
+    .sp-sec-k { font-family: "JetBrains Mono", monospace; font-size: 9px; letter-spacing: 0.12em; text-transform: uppercase; font-weight: 600; color: var(--ink-3); }
+    .sp-sec-n { font-family: "JetBrains Mono", monospace; font-size: 9px; color: var(--ink-3); border: 1px solid var(--line); border-radius: 999px; padding: 0 6px; }
+    .sp-abstract { font-size: 12px; line-height: 1.6; color: var(--ink-2); }
+    .sp-empty { font-size: 11px; color: var(--ink-3); font-style: italic; }
+    .sp-dois { display: flex; flex-direction: column; gap: 3px; }
+    /* standard-size scrollable connector tables — the inner boxed layer, always paired with the
+       same plain full-weight outer .sp-box node:
+       .sp-table       — flat (authors): the OUTER .sp-box is the only frame, so this carries no
+                         background/border of its own, just the scroll clip + row dividers.
+       .sp-table-light — lightened inner box, used for BOTH keywords (always) and
+                         observables-as-table (once the list exceeds TILE_MAX). */
+    .sp-table {
+      max-height: 176px; overflow-y: auto; display: flex; flex-direction: column;
+    }
+    .sp-table-light {
+      max-height: 176px; overflow-y: auto; display: flex; flex-direction: column;
+      background: var(--bg-2); border: 1px solid var(--line); border-radius: 8px; opacity: 0.92;
+    }
+    .sp-row {
+      display: flex; align-items: center; gap: 8px; width: 100%; text-align: left;
+      background: transparent; border: none; border-bottom: 1px solid var(--line);
+      padding: 6px 10px; cursor: pointer; font-family: inherit; font-size: 11.5px; color: var(--ink);
+      transition: background 0.12s, color 0.12s;
+    }
+    .sp-row:last-child { border-bottom: none; }
+    .sp-row:hover { background: var(--bg-3); }
+    .sp-row-g { font-family: "JetBrains Mono", monospace; font-size: 11px; flex-shrink: 0; }
+    .sp-row-v { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .sp-row-n { font-family: "JetBrains Mono", monospace; font-size: 9px; color: var(--ink-3); border: 1px solid var(--line-2); border-radius: 999px; padding: 0 6px; flex-shrink: 0; }
+    /* row signal-quality flags (mirror .sp-val-*). RED fill set inline (deepens with count). */
+    .sp-row-red { color: #fff; }
+    .sp-row-red .sp-row-g, .sp-row-red .sp-row-v { color: #fff; }
+    .sp-row-red .sp-row-n { color: #fff; border-color: rgba(255, 255, 255, 0.5); }
+    .sp-row-red:hover { filter: brightness(1.08); }
+    .sp-row-dead { color: var(--ink-3); opacity: 0.8; }
+    .sp-row-dead .sp-row-g, .sp-row-dead .sp-row-n { color: var(--ink-3); }
+    .sp-row.sel { background: var(--amber-soft); color: var(--amber); }
+    .sp-row.sel .sp-row-g, .sp-row.sel .sp-row-n { color: var(--amber); }
+    .sp-row.sel .sp-row-n { border-color: var(--amber); }
+    .sp-cprop-author .sp-row-g { color: oklch(0.5 0.15 280); }
+    .sp-cprop-keyword .sp-row-g { color: var(--teal); }
+    .sp-cprop-energy .sp-row-g { color: var(--amber); }
+    .sp-cprop-observable .sp-row-g { color: oklch(0.55 0.16 150); }
+    /* energy / few-observable tiles (reuse the .sp-val pill; render as buttons here) */
+    .sp-tiles { display: flex; flex-wrap: wrap; gap: 7px; }
+    .sp-tiles .sp-val { font-family: inherit; }
     /* inline "＋N more" band expander */
     .st-more-chip {
       display: inline-flex; align-items: center; background: transparent; border: 1px dashed var(--line-2);
@@ -1077,6 +1191,13 @@
       transition: background 0.12s, border-color 0.12s, color 0.12s;
     }
     .st-chip:hover { background: var(--bg-3); border-color: var(--line-2); }
+    /* signal-quality flags — see .sp-val-* above. RED fill is set inline (deepens with count). */
+    .st-chip-red { border-color: transparent; color: #fff; }
+    .st-chip-red .st-chip-g, .st-chip-red .st-chip-v { color: #fff; }
+    .st-chip-red .st-chip-n { color: #fff; border-color: rgba(255, 255, 255, 0.5); }
+    .st-chip-red:hover { border-color: transparent; filter: brightness(1.08); }
+    .st-chip-dead { background: var(--bg-3); border-color: var(--line); color: var(--ink-3); opacity: 0.75; }
+    .st-chip-dead .st-chip-g, .st-chip-dead .st-chip-n { color: var(--ink-3); }
     .st-chip.sel { border-color: var(--amber); background: var(--amber-soft); color: var(--amber); }
     .st-chip-g { font-family: "JetBrains Mono", monospace; font-size: 12px; flex-shrink: 0; }
     .st-cprop-author .st-chip-g { color: oklch(0.5 0.15 280); }
