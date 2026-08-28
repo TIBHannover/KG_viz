@@ -21,7 +21,7 @@
  * Run with: npm run parse-kg
  */
 
-import { createReadStream, writeFileSync, mkdirSync, existsSync } from 'fs';
+import { createReadStream, readFileSync, writeFileSync, mkdirSync, existsSync } from 'fs';
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { StreamParser } from 'n3';
@@ -32,6 +32,17 @@ const __dirname  = dirname(__filename);
 const TTL_PATH = resolve(__dirname, '../LDM-KG_dump_2026-02-09.ttl');
 const OUT_DIR  = resolve(__dirname, '../public');
 const OUT_PATH = resolve(__dirname, '../public/kg-data.json');
+const KW_PATH  = resolve(__dirname, '../public/kg-keywords.json');
+
+// KG-annotated keywords, produced by `npm run fetch-kw`:
+//   { concepts: { "<iri>": "label", … }, datasets: { "<uuid>": ["<iri>", …] } }
+// These REPLACE the TTL's dcat:keyword free-text. Each leaf gets `keywords`
+// (display labels) and `keywordConcepts` ([{iri,label}], for IRI-based matching).
+const KG_KEYWORDS = existsSync(KW_PATH)
+  ? JSON.parse(readFileSync(KW_PATH, 'utf8'))
+  : { concepts: {}, datasets: {} };
+if (!Object.keys(KG_KEYWORDS.datasets || {}).length)
+  console.warn('  [warn] public/kg-keywords.json missing/empty — run `npm run fetch-kw` first; leaf keywords will be empty.');
 
 // ─── RDF term constants ───────────────────────────────────────────────────────
 const RDF_TYPE     = 'http://www.w3.org/1999/02/22-rdf-syntax-ns#type';
@@ -191,7 +202,7 @@ async function parseTTL() {
       const o = quad.object.value;
 
       if (p === RDF_TYPE) {
-        if (o === DCAT_DS)    { datasetUris.add(s); const u = uuidOf(s); if (u) { const r = recOf(u); if (s.includes('/ldm/dataset/')) r.uri = s; } if (++count % 5000 === 0) process.stdout.write(`\r  parsed ${count} datasets...`); }
+        if (o === DCAT_DS)    { datasetUris.add(s); const u = uuidOf(s); if (u) { const r = recOf(u); if (s.includes('/ldm/dataset/')) r.uri = s; } if (++count % 5000 === 0) process.stdout.write(`\r  scanned ${count} dcat:Dataset subjects (2 per dataset: metadata + creator forms)...`); }
         else if (o === PRO_AUTHOR) isAuthor.add(s);
         else if (o === VCARD_ORG)  isOrg.add(s);
         return;
@@ -283,14 +294,19 @@ function buildGraph(datasets) {
       members.forEach((d, li) => {
         // HEPData smuggles structured facets into dcat:keyword as "key: value"
         // pairs — cmenergies (centre-of-mass energy √s) and observables (the
-        // measured quantity). Promote them to first-class node properties so they
-        // can drive their own connectors, and keep them out of the free-text list.
-        const kwList = [], energies = [], observables = [];
+        // measured quantity). We still lift these from the TTL as first-class
+        // node properties. The topical `keywords`, however, now come from the KG
+        // annotation layer (KG_KEYWORDS), not the TTL free-text.
+        const energies = [], observables = [];
         for (const kw of new Set(d.keywords)) {
           const m = kw.match(/^(cmenergies|observables)\s*:\s*(.+)$/);
           if (m) (m[1] === 'cmenergies' ? energies : observables).push(m[2].trim());
-          else kwList.push(kw);
         }
+        // Topical keywords come from the KG annotation layer, matched to this
+        // dataset by UUID. Each carries its grounding concept IRI (for IRI-based
+        // connection matching in the storyline) and its rdfs:label (for display).
+        const kgIris = KG_KEYWORDS.datasets?.[uuidOf(d.uri || '')] ?? [];
+        const keywordConcepts = kgIris.map(iri => ({ iri, label: KG_KEYWORDS.concepts?.[iri] ?? iri }));
         const n = {
           id:          `lf:${clId}:${li}`,
           level:       2,
@@ -303,7 +319,8 @@ function buildGraph(datasets) {
           hue:         srcDef.hue,
           weight:      1 + (li * 7) % 8,
           uri:         d.uri,
-          keywords:    kwList,                 // free-text dcat:keyword values (deduped)
+          keywords:    keywordConcepts.map(k => k.label),  // display labels (used across all views)
+          keywordConcepts,                                  // [{ iri, label }] — storyline matches by IRI
           energies,                            // cmenergies: √s (centre-of-mass energy)
           observables,                         // observables: measured quantity (SIG, DSIG/DX…)
           publisher:   d.publisher,
@@ -352,13 +369,14 @@ function buildGraph(datasets) {
 
   // Build property indexes: shared value → [leafNode, ...]
   // (orgName is intentionally not indexed — publisher is not a link; see header note)
-  const kwIndex     = {};
+  const kwIndex     = {};   // keyed by concept IRI (not label) so homonyms stay distinct
+  const kwLabel     = {};   // concept IRI → display label, for the edge's `via` reason
   const fnIndex     = {};
   const doiIndex    = {};
   const authorIndex = {};
 
   for (const n of leafNodes) {
-    for (const kw of (n.keywords ?? []))    (kwIndex[kw]          ??= []).push(n);
+    for (const kc of (n.keywordConcepts ?? [])) { (kwIndex[kc.iri] ??= []).push(n); kwLabel[kc.iri] ??= kc.label; }
     if (n.vcardFn)                           (fnIndex[n.vcardFn]   ??= []).push(n);
     for (const doi of (n.dois ?? []))       (doiIndex[doi]         ??= []).push(n);
     for (const au of (n.authors ?? []))     (authorIndex[au]       ??= []).push(n);
@@ -377,7 +395,7 @@ function buildGraph(datasets) {
   connectIndex(authorIndex, 12, 'author');                      // dct:creator → pro:Author
   connectIndex(doiIndex,      8, 'doi', v => v.replace(/^https?:\/\/(dx\.)?doi\.org\//, ''));  // datacite:isDescribedBy
   connectIndex(fnIndex,      10, 'contact');                    // vcard:fn
-  connectIndex(kwIndex,      12, 'keyword');                    // dcat:keyword
+  connectIndex(kwIndex,      12, 'keyword', iri => kwLabel[iri] ?? iri);  // grouped by concept IRI; via shows the label
 
   // Emit one edge per linked pair, carrying its reasons.
   const edges = [];

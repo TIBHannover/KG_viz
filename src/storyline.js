@@ -17,6 +17,12 @@ import { colorFor, esc, clip } from './helpers.js';
 
 const GLYPH = { author: '✎', keyword: '#', org: '⌂', doi: '◈', energy: '√', observable: '∂' };
 const MEMBER_CAP = 60;   // tiles shown per connector before "showing top N"
+// A connector's connected datasets bloom as a force-directed cluster ONLY while there are few
+// enough for the node-link picture to say something. Past this the discs shrink, the labels
+// collide and finding a specific dataset becomes a squinting exercise — so it switches to a
+// scannable table instead (same call the connector bands make between tiles and a table).
+const BLOOM_MAX = 8;      // members at or below this bloom as a node-link cluster
+const MEMBER_ROWS_CAP = 200;   // rows listed in the table form before "＋N more"
 
 export function openStoryline(host, seed, ctx) {
   const { KG, nodeById, degree, adjacency } = ctx;
@@ -236,7 +242,9 @@ export function openStoryline(host, seed, ctx) {
     const push = (map, k, id) => { let a = map.get(k); if (!a) map.set(k, a = []); a.push(id); };
     KG.leafNodes.forEach(n => {
       (n.authors || []).forEach(a => push(authorIndex, a, n.id));
-      (n.keywords || []).forEach(k => push(keywordIndex, k, n.id));
+      // Keywords are indexed by concept IRI, so datasets connect only when they
+      // share the SAME concept (homonyms like the OEO vs MENO "radiation" stay apart).
+      (n.keywordConcepts || []).forEach(kc => push(keywordIndex, kc.iri, n.id));
       (n.energies || []).forEach(e => push(energyIndex, e, n.id));
       (n.observables || []).forEach(o => push(observableIndex, o, n.id));
     });
@@ -247,18 +255,21 @@ export function openStoryline(host, seed, ctx) {
   // not just the ones that happen to form graph edges). Each connector's members =
   // the other datasets that also carry that author / keyword / energy / observable.
   function connectorsOf(focal) {
-    const mk = (values, map) => (values || []).map(value => {
-      const members = (map.get(value) || [])
-        .filter(id => id !== focal.id)
-        .map(id => nodeById[id]).filter(Boolean)
-        .sort((a, b) => (degree[b.id] || 0) - (degree[a.id] || 0));
-      return { value, members };
-    });
+    // members of a connector = the OTHER datasets sharing that key, degree-sorted.
+    const membersOf = (map, key) => (map.get(key) || [])
+      .filter(id => id !== focal.id)
+      .map(id => nodeById[id]).filter(Boolean)
+      .sort((a, b) => (degree[b.id] || 0) - (degree[a.id] || 0));
+    // Each connector carries `value` (the MATCH key + selection identity) and
+    // `label` (the DISPLAYED text). For authors/energy/observables they coincide;
+    // for keywords `value` is the concept IRI while `label` is its rdfs:label.
+    const mk   = (values,   map) => (values   || []).map(value            => ({ value, label: value, members: membersOf(map, value) }));
+    const mkKw = (concepts, map) => (concepts || []).map(({ iri, label }) => ({ value: iri, label,   members: membersOf(map, iri)   }));
     return {
-      authors:     mk(focal.authors,     idx.authorIndex),
-      keywords:    mk(focal.keywords,    idx.keywordIndex),
-      energies:    mk(focal.energies,    idx.energyIndex),
-      observables: mk(focal.observables, idx.observableIndex),
+      authors:     mk(focal.authors,           idx.authorIndex),
+      keywords:    mkKw(focal.keywordConcepts, idx.keywordIndex),
+      energies:    mk(focal.energies,          idx.energyIndex),
+      observables: mk(focal.observables,       idx.observableIndex),
     };
   }
 
@@ -323,9 +334,10 @@ export function openStoryline(host, seed, ctx) {
     const sel = selected && selected.prop === prop && selected.value === c.value;
     const q = sel ? '' : connClass(c.members);   // selection styling wins; don't flag while picked
     const style = q === 'red' ? ` style="background:${redFill(c.members.length)}"` : '';
-    return `<button class="st-chip st-cprop-${prop}${sel ? ' sel' : ''}${q ? ' st-chip-' + q : ''}"${style} data-prop="${prop}" data-value="${esc(c.value)}" title="${esc(c.value)}${connHint(q)}">
+    const disp = c.label ?? c.value;   // show the label; identity/matching stays on c.value
+    return `<button class="st-chip st-cprop-${prop}${sel ? ' sel' : ''}${q ? ' st-chip-' + q : ''}"${style} data-prop="${prop}" data-value="${esc(c.value)}" title="${esc(disp)}${connHint(q)}">
       <span class="st-chip-g">${GLYPH[prop]}</span>
-      <span class="st-chip-v">${esc(clip(c.value, 32))}</span>
+      <span class="st-chip-v">${esc(clip(disp, 32))}</span>
       <span class="st-chip-n">${c.members.length}</span>
     </button>`;
   }
@@ -395,9 +407,10 @@ export function openStoryline(host, seed, ctx) {
     const sel = selected && selected.prop === prop && selected.value === c.value;
     const q = sel ? '' : connClass(c.members);   // selection styling wins; don't flag while picked
     const style = q === 'red' ? ` style="background:${redFill(c.members.length)}"` : '';
-    return `<button class="sp-row sp-cprop-${prop}${sel ? ' sel' : ''}${q ? ' sp-row-' + q : ''}"${style} data-prop="${prop}" data-value="${esc(c.value)}" title="${esc(c.value)}${connHint(q)}">
+    const disp = c.label ?? c.value;   // show the label; identity/matching stays on c.value
+    return `<button class="sp-row sp-cprop-${prop}${sel ? ' sel' : ''}${q ? ' sp-row-' + q : ''}"${style} data-prop="${prop}" data-value="${esc(c.value)}" title="${esc(disp)}${connHint(q)}">
       <span class="sp-row-g">${GLYPH[prop]}</span>
-      <span class="sp-row-v">${esc(c.value)}</span>
+      <span class="sp-row-v">${esc(disp)}</span>
       <span class="sp-row-n">${c.members.length}</span>
     </button>`;
   }
@@ -405,9 +418,10 @@ export function openStoryline(host, seed, ctx) {
     const sel = selected && selected.prop === prop && selected.value === c.value;
     const q = sel ? '' : connClass(c.members);
     const style = q === 'red' ? ` style="background:${redFill(c.members.length)}"` : '';
-    return `<button class="sp-val sp-cprop-${prop}${sel ? ' sel' : ''}${q ? ' sp-val-' + q : ''}"${style} data-prop="${prop}" data-value="${esc(c.value)}" title="${esc(c.value)}${connHint(q)}">
+    const disp = c.label ?? c.value;   // show the label; identity/matching stays on c.value
+    return `<button class="sp-val sp-cprop-${prop}${sel ? ' sel' : ''}${q ? ' sp-val-' + q : ''}"${style} data-prop="${prop}" data-value="${esc(c.value)}" title="${esc(disp)}${connHint(q)}">
       <span class="sp-val-g">${GLYPH[prop]}</span>
-      <span class="sp-val-v">${esc(clip(c.value, 24))}</span>
+      <span class="sp-val-v">${esc(clip(disp, 24))}</span>
       <span class="sp-val-n">${c.members.length}</span>
     </button>`;
   }
@@ -445,6 +459,27 @@ export function openStoryline(host, seed, ctx) {
     else body = list.length <= TILE_MAX ? tiles() : `<div class="sp-table-light">${rows()}</div>`;   // observables: tiles, or a lightened inner table
     return `<div class="sp-sec-h"><span class="sp-sec-k">${esc(band.label)}</span><span class="sp-sec-n">${band.list.length}</span></div>
       ${body}`;
+  }
+  // CONNECTED DATASETS in table form — used once a connector has more members than a node-link
+  // cluster can usefully show (see BLOOM_MAX). Same grammar as the connector bands: a header, then
+  // a scrollable list. Rows are ordered by degree (connectorsOf already sorts that way), so the
+  // best-connected datasets lead. Each row drills in, exactly like a bloom node.
+  function membersBoxHTML(members, propLabel, connLabel) {
+    const shown = members.slice(0, MEMBER_ROWS_CAP);
+    const rows = shown.map(m => `<button class="sp-mrow" data-eid="${esc(m.id)}" title="${esc(m.title || m.label)}">
+        <span class="sp-mrow-dot" style="background:${colorFor(m.hue)}"></span>
+        <span class="sp-mrow-v">${esc(m.title || m.label)}</span>
+        <span class="sp-mrow-n">${degree[m.id] || 0}</span>
+      </button>`).join('');
+    const more = members.length > MEMBER_ROWS_CAP
+      ? `<div class="sp-empty">＋${members.length - MEMBER_ROWS_CAP} more not listed (top ${MEMBER_ROWS_CAP} by degree)</div>` : '';
+    return `<div class="sp-sec-h">
+        <span class="sp-sec-k">Datasets sharing this ${esc(propLabel)}</span>
+        <span class="sp-sec-n">${members.length}</span>
+      </div>
+      <div class="sp-mrow-sub">${esc(connLabel)}</div>
+      <div class="sp-mtable">${rows}</div>
+      ${more}`;
   }
 
   function render() {
@@ -606,10 +641,13 @@ export function openStoryline(host, seed, ctx) {
       maxRight = Math.max(maxRight, boxRight + GROUP_PAD);
     }
 
-    // CONNECTED DATASETS — picking any connector (a table row or a tile) blooms ITS connected
-    // datasets into a force-directed hairball HOUSED in a rounded rectangle, hanging off the RIGHT
-    // of that connector's own box. The spoke leaves the box edge level with the picked row's box;
-    // member↔member threads inside stay hidden until a node is hovered.
+    // CONNECTED DATASETS — picking any connector (a table row or a tile) branches ITS connected
+    // datasets off the RIGHT of that connector's own box, with the spoke leaving the box edge level
+    // with the picked row. HOW they're drawn depends on how many there are:
+    //   ≤ BLOOM_MAX — a force-directed cluster housed in a rounded rectangle; member↔member threads
+    //                 stay hidden until a node is hovered. The picture earns its place at this size.
+    //   > BLOOM_MAX — a scrollable table, because a node-link cluster of dozens (or thousands) of
+    //                 discs is unreadable and unsearchable. Same box grammar as the connector bands.
     if (selected && selBox) {
       const band = bands.find(b => b.prop === selected.prop);
       const c = band?.list.find(x => x.value === selected.value);
@@ -624,6 +662,19 @@ export function openStoryline(host, seed, ctx) {
         edges.push({ x1: sx, y1: spokeY, x2: sx + GAP_X, y2: spokeY, cls: 'sp-spoke', horiz: true });
         maxRight = Math.max(maxRight, sx + GAP_X + 380);
         bottom = Math.max(bottom, spokeY + 30);
+      } else if (all.length > BLOOM_MAX) {
+        // ── TABLE form: one boxed, scrollable list of the connected datasets ──
+        const MEM_W = Math.min(560, CARD_W);
+        const mx = sx + GAP_X;
+        const el = add('sp-box sp-members', mx, MEM_W,
+          membersBoxHTML(all, selected.prop, c.label ?? c.value));
+        const mh = el.offsetHeight;
+        let mTop = spokeY - mh / 2;
+        if (mTop < selBox.top) mTop = selBox.top;   // don't let the list ride above its own box
+        el.style.top = mTop + 'px';
+        edges.push({ x1: sx, y1: spokeY, x2: mx, y2: mTop + mh / 2, cls: 'sp-spoke', horiz: true });
+        maxRight = Math.max(maxRight, mx + MEM_W);
+        bottom = Math.max(bottom, mTop + mh);
       } else {
         // ── build the ego graph: member nodes + real KG edges among the shown members ──
         const LABEL_W = 108, LABEL_H = 28;   // two-line title footprint under each node
@@ -692,12 +743,6 @@ export function openStoryline(host, seed, ctx) {
           lab.title = n.title;
           bottom = Math.max(bottom, n.y + n.r + LABEL_H);
         });
-        if (all.length > MEMBER_CAP) {
-          const p = add('sp-prompt', rL, Math.max(180, rR - rL),
-            `＋${all.length - MEMBER_CAP} more not shown (top ${MEMBER_CAP} by degree)`);
-          p.style.top = (rB + 8) + 'px';
-          bottom = Math.max(bottom, rB + 8 + p.offsetHeight);
-        }
       }
     }
 
@@ -739,7 +784,11 @@ export function openStoryline(host, seed, ctx) {
       pendingBloomPan = turningOn;   // only glide the camera on SELECT — a deselect leaves it be
       render();
     });
-    spine.querySelectorAll('.sp-node[data-eid]').forEach(el => el.onclick = () => drillInto(nodeById[el.dataset.eid]));
+    // drill in from either bloom form — a cluster node/label, or a row of the members table
+    spine.querySelectorAll('[data-eid]').forEach(el => el.onclick = e => {
+      e.stopPropagation();
+      drillInto(nodeById[el.dataset.eid]);
+    });
     spine.querySelectorAll('.sp-box a').forEach(a => a.onclick = ev => ev.stopPropagation());
     // member threads are hidden until you hover a node — then only that node's threads light up.
     const edgeByNode = new Map();
@@ -754,12 +803,15 @@ export function openStoryline(host, seed, ctx) {
     });
 
     // If this render was triggered by SELECTING a connector, glide the camera to frame whatever
-    // just bloomed — the housed cluster of member nodes, or the "no other dataset shares this"
-    // prompt when it's empty. Runs last so the DOM (and its layout) already reflects the new pick.
+    // just branched out — the members table, the housed cluster of nodes, or the "no other dataset
+    // shares this" prompt. Runs last so the DOM (and its layout) already reflects the new pick.
     if (pendingBloomPan) {
       pendingBloomPan = false;
+      const table = spine.querySelector('.sp-members');
       const gnodes = spine.querySelectorAll('.sp-gnode');
-      if (gnodes.length) {
+      if (table) {
+        panToEl(table);
+      } else if (gnodes.length) {
         let l = Infinity, t = Infinity, r = -Infinity, b = -Infinity;
         gnodes.forEach(n => {
           const rc = n.getBoundingClientRect();

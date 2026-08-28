@@ -1156,6 +1156,33 @@
     /* energy / few-observable tiles (reuse the .sp-val pill; render as buttons here) */
     .sp-tiles { display: flex; flex-wrap: wrap; gap: 7px; }
     .sp-tiles .sp-val { font-family: inherit; }
+    /* ── CONNECTED DATASETS, table form. Shown instead of the force-directed cluster once a
+       connector has more members than a node-link picture can usefully carry (BLOOM_MAX): dozens
+       of shrinking discs are neither readable nor searchable, a sorted list is both. Taller than
+       the connector tables because this is the payload, not a side list. ── */
+    .sp-members { max-width: 100%; }
+    .sp-mrow-sub {
+      font-size: 11px; color: var(--ink-2); font-style: italic; margin-top: -2px;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .sp-mtable {
+      max-height: 420px; overflow-y: auto; display: flex; flex-direction: column;
+      background: var(--bg-2); border: 1px solid var(--line); border-radius: 8px;
+    }
+    .sp-mrow {
+      display: flex; align-items: center; gap: 9px; width: 100%; text-align: left;
+      background: transparent; border: none; border-bottom: 1px solid var(--line);
+      padding: 7px 10px; cursor: pointer; font-family: inherit; font-size: 11.5px; color: var(--ink);
+      transition: background 0.12s, color 0.12s;
+    }
+    .sp-mrow:last-child { border-bottom: none; }
+    .sp-mrow:hover { background: var(--bg-3); color: var(--teal); }
+    .sp-mrow-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+    .sp-mrow-v { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .sp-mrow-n {
+      font-family: "JetBrains Mono", monospace; font-size: 9px; color: var(--ink-3);
+      border: 1px solid var(--line-2); border-radius: 999px; padding: 0 6px; flex-shrink: 0;
+    }
     /* inline "＋N more" band expander */
     .st-more-chip {
       display: inline-flex; align-items: center; background: transparent; border: 1px dashed var(--line-2);

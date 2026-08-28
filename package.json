@@ -6,7 +6,9 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "parse-kg": "node scripts/parse-kg.js"
+    "fetch-kw": "node scripts/fetch-kw.js",
+    "parse-kg": "node scripts/parse-kg.js",
+    "build-kg": "node scripts/fetch-kw.js && node scripts/parse-kg.js"
   },
   "dependencies": {
     "d3": "^7.9.0"
