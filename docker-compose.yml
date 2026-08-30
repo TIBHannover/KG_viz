@@ -3,10 +3,11 @@ services:
     build:
       context: .
       args:
-        # Fill in the real Virtuoso endpoint before building — the placeholder
-        # in src/config.js is not CORS-enabled and won't work in production.
-        VITE_SPARQL_ENDPOINT: "https://YOUR-VIRTUOSO-HOST/sparql"
-        VITE_SPARQL_GRAPH: "urn:your-graph"
+        # Read from a local .env file (see .env.example) so the real endpoint
+        # never ends up committed to git. Falls back to the config.js
+        # placeholder if .env is missing.
+        VITE_SPARQL_ENDPOINT: ${VITE_SPARQL_ENDPOINT:-https://YOUR-VIRTUOSO-HOST/sparql}
+        VITE_SPARQL_GRAPH: ${VITE_SPARQL_GRAPH:-urn:your-graph}
     restart: unless-stopped
     ports:
       # Host port that IT's reverse proxy will target. Change the left side
