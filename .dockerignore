@@ -1,0 +1,20 @@
+node_modules
+dist
+legacy
+.git
+.gitignore
+.playwright-mcp
+
+# Raw RDF source dump — not needed to build or run the app
+*.ttl
+
+# Generated data files — bind-mounted into the container at runtime instead
+# of being baked into the image (see docker-compose.yml). Keep them present
+# in public/ on disk for local dev (npm run dev/build), but never send them
+# into the Docker build context.
+public/kg-data.json
+public/kg-keywords.json
+
+# Misc project clutter not needed in the build context
+*.docx
+*.png

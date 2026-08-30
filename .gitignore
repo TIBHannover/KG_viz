@@ -2,3 +2,4 @@ node_modules/
 dist/
 .DS_Store
 legacy/
+LDM-KG_dump_2026-02-09.ttl

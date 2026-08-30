@@ -1,0 +1,22 @@
+services:
+  atlas:
+    build:
+      context: .
+      args:
+        # Fill in the real Virtuoso endpoint before building — the placeholder
+        # in src/config.js is not CORS-enabled and won't work in production.
+        VITE_SPARQL_ENDPOINT: "https://YOUR-VIRTUOSO-HOST/sparql"
+        VITE_SPARQL_GRAPH: "urn:your-graph"
+    restart: unless-stopped
+    ports:
+      # Host port that IT's reverse proxy will target. Change the left side
+      # to whatever port is free/assigned on the server; leave the right
+      # side (80) alone — that's nginx inside the container.
+      - "8091:80"
+    volumes:
+      # The generated dataset lives on the host, not in the image, so a data
+      # refresh is just "replace these files" — no rebuild/redeploy needed.
+      # Generate them locally with `npm run build-kg`, then copy this whole
+      # public/ folder onto the server next to this compose file.
+      - ./public/kg-data.json:/usr/share/nginx/html/kg-data.json:ro
+      - ./public/kg-keywords.json:/usr/share/nginx/html/kg-keywords.json:ro
